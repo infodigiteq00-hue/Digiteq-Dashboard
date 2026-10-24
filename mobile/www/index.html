@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Digiteq</title>
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; font-family: system-ui, sans-serif; background: #f5f6fa; color: #0f172a; }
+    body { display: grid; place-items: center; text-align: center; padding: 24px; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <!-- Only shown if the app cannot reach the dashboard (server.url in capacitor.config.json). -->
+  <div>
+    <h2>Digiteq</h2>
+    <p>Cannot reach the dashboard. Check your internet connection.</p>
+    <button onclick="location.reload()">Try again</button>
+  </div>
+</body>
+</html>

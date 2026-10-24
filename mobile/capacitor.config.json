@@ -1,0 +1,12 @@
+{
+  "appId": "com.digiteq.dashboard",
+  "appName": "Digiteq",
+  "webDir": "www",
+  "server": {
+    "url": "https://YOUR-DASHBOARD-DOMAIN",
+    "cleartext": false
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

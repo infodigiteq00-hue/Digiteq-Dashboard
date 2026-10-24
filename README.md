@@ -17,38 +17,73 @@ There is one codebase: the same app runs as a **website**, an installable **PC a
 | – | **Client logos**: upload a logo when adding/editing a client, or tap the image icon on the client page. It's shown on client cards, tasks and the overview | Clients |
 | – | **List or Board** view for tasks on PC. Drag cards between To do / In progress; dropping on Done opens the "Mark as done" sheet | Tasks |
 | – | **Light / Dark / Auto** theme | Settings |
-| – | **Live updates on every page**: changes show up right away with no refresh needed (green dot = live). It re-syncs when you reopen the app | everywhere |
+| – | **Live updates on every page**: changes show up within a few seconds with no refresh needed (green dot = live). It re-syncs when you reopen the app | everywhere |
 | – | **No pull-to-refresh on phones**: swiping down never reloads the app | phone |
 
 Roles: **Super admin** has full control (clients, tasks, team). **Employee** sees their tasks, can view clients, and keeps their own notes and self-added tasks.
 
 ## Run it
 
-Requires **Node.js 22.13+**. Node 24 is recommended. There is no database server to install: data is kept in `data/dashboard.db` (SQLite built into Node).
+Requires **Node.js 22.13+** (Node 24 recommended) and npm. The app runs in Cloudflare's local Workers runtime, with local D1 and R2 emulators. No Cloudflare login or production bindings are needed for local development.
 
 ```bash
 npm install
+npm run dev
 ```
+
+Open [http://localhost:8788](http://localhost:8788). The first screen creates the **super admin** account. After that, go to **Team → Add employee** to add your staff.
+
+Wrangler stores local D1/R2 data in `.wrangler/state/`. It is separate from production and is ignored by Git. The schema is created automatically on the first API request. To start with an empty local workspace, stop the dev server and remove only `.wrangler/state/`.
+
+For optional local settings, create an ignored `.dev.vars` file:
+
+```dotenv
+TIMEZONE=Asia/Kolkata
+WORK_START=9
+WORK_END=20
+VAPID_SUBJECT=mailto:admin@digiteq.local
+CRON_SECRET=replace-with-a-random-local-secret
+```
+
+`TIMEZONE` is an IANA time zone. Work hours are inclusive: defaults are 09:00 through 20:00 in India. The overview's **Done today**, hourly job slots, and next digest time all use this zone. Local requests to `/api/sync` also check the hourly job, at most once a minute per isolate.
+
+To repeat the integration smoke test against a **disposable local workspace**, keep `npm run dev` running and use another terminal:
 
 ```bash
-npm start
+npm run test:flow
+npm run test:runtime
 ```
 
-Open http://localhost:3000. The first screen creates the **super admin** account. After that, go to **Team → Add employee** to add your staff.
+The flow test creates a local super admin (`smokeadmin` / `local-smoke-password`) on an empty database, then exercises employees, client logos, assignments, raw uploads, progress, digest/completion alerts, private notes, sync, downloads and permissions. It retains test fixtures for browser checks. On an existing local test database, set `TEST_ADMIN_USERNAME` and `TEST_ADMIN_PASSWORD` to its admin credentials. Never use these test credentials for a deployed workspace.
 
-Settings (environment variables): `PORT` (default 3000), `DATA_DIR` (default `./data`), `VAPID_SUBJECT` (contact for push, e.g. `mailto:you@company.com`), `WORK_START` / `WORK_END` (hours when hourly digests and reminders are sent, default 9 and 20), and `TZ` (your timezone, e.g. `Asia/Kolkata`, so those hours match your clock).
+Existing `data/` from the Node version is **not migrated**. Its SQLite database, files, scrypt password hashes and push keys are not read by this version. Keep a backup if you need those records; a fresh Cloudflare deployment starts with first-run setup.
 
-**Backup:** copy the `data/` folder. It holds the database, uploaded files and the push keys.
+## Put it online
 
-## Put it online (so phones and other PCs can use it)
+### Cloudflare setup
 
-Installing the app and getting push notifications both need **HTTPS**. Some options:
+Use the **Digiteq Cloudflare account**, where Pages project **`digiteqdash`** lives. The project is connected to GitHub repository `infodigiteq00-hue/Digiteq-Dashboard`, branch `main`. The CLI currently logged in under another account must not be used to create or deploy production resources there.
 
-- A small VPS (DigitalOcean, Hetzner, AWS Lightsail…) running `npm start` behind **Caddy**, which adds HTTPS automatically:
-  `dashboard.yourcompany.com { reverse_proxy localhost:3000 }`
-- Any Node host with a persistent disk (Render, Railway, Fly.io). Mount a volume and point `DATA_DIR` at it.
+1. In the Digiteq account, create a **D1 database** named `digiteq` and an **R2 bucket** named `digiteq-files`. [R2 requires enabling an R2 subscription and billing details, including for the free tier](https://developers.cloudflare.com/r2/get-started/).
+2. In the Pages project's build settings, leave the **build command empty**, set **build output directory** to `public`, and **root directory** to `/`. Static assets come from `public/`; Pages builds the API from `functions/` automatically.
+3. Under **Settings → Bindings**, add a **D1 database** binding named **`DB`** pointing to `digiteq`, and an **R2 bucket** binding named **`FILES`** pointing to `digiteq-files`. Configure the production environment (and preview separately if you use previews). Missing bindings return JSON errors pointing back here.
+4. Set environment variables: `TIMEZONE=Asia/Kolkata`, `WORK_START=9`, `WORK_END=20`, and a long random **`CRON_SECRET`**, stored as a secret. Optionally set `VAPID_SUBJECT` to a contact email such as `mailto:admin@yourcompany.com`. Use compatibility date `2025-01-01` or later. Redeploy after changing bindings or variables.
+5. Deploy the small scheduled Worker **after authenticating Wrangler to the Digiteq account**:
 
-Keep the process running with `pm2 start server.js --name digiteq` or a systemd service.
+   ```bash
+   cd cron
+   npx wrangler deploy
+   npx wrangler secret put CRON_SECRET
+   ```
+
+   Enter the **same secret** configured on Pages. Its schedule runs every 15 minutes and POSTs to `https://digiteqdash.pages.dev/api/cron/hourly`; the API claims each local hourly slot only once, during work hours. Set `SITE_URL` in `cron/wrangler.toml` if the Pages hostname changes. The cron Worker keeps digests/reminders running even with no open app. The endpoint refuses requests when `CRON_SECRET` is unset or incorrect.
+6. Open [https://digiteqdash.pages.dev](https://digiteqdash.pages.dev) and create your production super admin. HTTPS supports installation and push notifications. VAPID keys are generated once and saved in D1 automatically.
+
+There is intentionally **no root `wrangler.toml`**: production Pages bindings belong to the Digiteq account and are configured in its dashboard. `cron/wrangler.toml` configures only the scheduled Worker.
+
+The [free Workers plan permits 100,000 requests per day](https://developers.cloudflare.com/workers/platform/limits/#daily-request). API polling counts toward that quota. The app checks every 3 seconds while active, every 8 seconds after two idle minutes, and every 30 seconds while hidden; each open tab/device adds requests. Static asset requests are separate from Pages Functions usage. Review usage before rolling out to a large team.
+
+**Backups:** export D1 and preserve R2 objects separately using Cloudflare's dashboard or account-scoped tooling. Keep VAPID metadata with the database so existing push subscriptions continue to work after a restore.
 
 ## Install the apps
 
@@ -75,14 +110,19 @@ cd mobile && npm install && npx cap add android && npx cap open android
 ## Project layout
 
 ```
-server.js            API, live updates (Server-Sent Events), push notifications, static files
-public/index.html    app shell
-public/app.js        the whole front-end (no build step)
-public/styles.css    styles (light + dark mode, phone + desktop)
-public/sw.js         service worker: install, offline shell, push notifications
-public/manifest.webmanifest  app name/icons for installing
-mobile/              optional Capacitor wrapper for app-store builds
-data/                created on first run: database, uploads, push keys (not in git)
+functions/api/[[path]].js    Pages API entry point
+server/api.js               async API, D1 schema, permissions, digest/reminder jobs
+server/push.js              WebCrypto push encryption and VAPID
+server/time.js              scheduling in the configured time zone
+cron/                       scheduled Worker (every 15 minutes)
+public/index.html           app shell
+public/app.js               front-end, adaptive sync polling and direct uploads
+public/styles.css           styles (light + dark mode, phone + desktop)
+public/sw.js                service worker: install, offline shell, push notifications
+public/manifest.webmanifest app name/icons for installing
+mobile/                     optional Capacitor wrapper for app-store builds
+tests/                      local API integration and Workers runtime checks
+.wrangler/state/            local emulated database and files (not in git)
 ```
 
 ## Notes

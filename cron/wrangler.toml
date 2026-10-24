@@ -1,0 +1,10 @@
+name = "digiteq-cron"
+main = "index.js"
+compatibility_date = "2025-01-01"
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+[vars]
+SITE_URL = "https://digiteqdash.pages.dev"
+# Set CRON_SECRET with `npx wrangler secret put CRON_SECRET`; never commit it here.

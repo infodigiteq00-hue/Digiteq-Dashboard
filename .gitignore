@@ -3,3 +3,9 @@ data/
 mobile/node_modules/
 mobile/android/
 mobile/ios/
+
+.wrangler/
+.dev.vars
+.dev.vars.*
+.env
+.env.*

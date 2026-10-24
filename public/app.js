@@ -21,7 +21,6 @@ const S = {
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const isAdmin = () => S.user?.role === 'superadmin';
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const isMobile = () => matchMedia('(max-width: 900px)').matches;
 
 // ------------------------------------------------------------------ api
@@ -267,22 +266,31 @@ function renderAttach(box) {
       <span class="muted small">· ${it.kind === 'link' ? esc(hostOf(it.url)) : fileSize(it.size)}</span></div>
     <button type="button" class="icon-btn sm" data-act="attRemove" data-i="${i}" aria-label="Remove">${ic('x')}</button></div>`).join('');
 }
-function collectAttachments(root) {
+async function collectAttachments(root) {
   const out = [];
   for (const box of $$('[data-attach]', root)) {
     // A link typed but not "Added" still counts, so nothing is lost.
     const url = $('[data-link-url]', box).value.trim();
     if (url) out.push({ kind: 'link', url, title: $('[data-link-title]', box).value.trim() });
-    out.push(...attachItems(box));
+    for (const item of attachItems(box)) {
+      if (item.kind === 'link') { out.push(item); continue; }
+      // Keep a successful upload for retries if a later file or form save fails.
+      if (!item.uploaded) {
+        const res = await fetch('/api/upload', {
+          method: 'POST', headers: { Authorization: `Bearer ${S.token}`,
+            'Content-Type': item.type || 'application/octet-stream', 'X-File-Name': encodeURIComponent(item.name) },
+          body: item.file,
+        });
+        const data = await res.json();
+        if (res.status === 401) logout(true);
+        if (!res.ok) throw new Error(data.error || 'Could not upload file');
+        item.uploaded = data;
+      }
+      out.push({ kind: 'file', ...item.uploaded });
+    }
   }
   return out;
 }
-const readFile = (file) => new Promise((resolve, reject) => {
-  const r = new FileReader();
-  r.onload = () => resolve(r.result);
-  r.onerror = () => reject(new Error(`Could not read ${file.name}`));
-  r.readAsDataURL(file);
-});
 // Shrink a logo to max 256 px and re-encode as PNG (keeps transparency, small upload, strips anything odd).
 async function resizeImage(file, max = 256) {
   const url = URL.createObjectURL(file);
@@ -308,7 +316,7 @@ document.addEventListener('change', async (e) => {
       const box = input.closest('[data-attach]');
       for (const f of input.files) {
         if (f.size > MAX_FILE) { toast(`${f.name} is larger than 25 MB. Share it as a link instead.`, 'bad'); continue; }
-        attachItems(box).push({ kind: 'file', name: f.name, type: f.type, size: f.size, data: await readFile(f) });
+        attachItems(box).push({ kind: 'file', name: f.name, type: f.type, size: f.size, file: f });
       }
       input.value = '';
       renderAttach(box);
@@ -856,7 +864,7 @@ function mountShell() {
 function setLive(on) {
   S.live = on;
   const dot = $('.live');
-  if (dot) { dot.classList.toggle('on', on); dot.title = on ? 'Live: changes appear instantly' : 'Reconnecting…'; dot.textContent = on ? 'Live' : 'Offline'; }
+  if (dot) { dot.classList.toggle('on', on); dot.title = on ? 'Live: checking for changes regularly' : 'Reconnecting…'; dot.textContent = on ? 'Live' : 'Offline'; }
 }
 
 // ------------------------------------------------------------------ notes pop-up window
@@ -1290,7 +1298,7 @@ const SUBMIT = {
     const admin = isAdmin();
     const body = {
       title: f.title.value.trim(), client_id: f.client_id.value || null, priority: f.priority.value,
-      deadline: fromLocalInput(f.deadline.value), description: f.description.value, materials: collectAttachments(f),
+      deadline: fromLocalInput(f.deadline.value), description: f.description.value,
     };
     if (!body.title) { f.title.focus(); throw new Error('Please enter a task title'); }
     if (admin) {
@@ -1302,19 +1310,20 @@ const SUBMIT = {
         throw new Error('Assign this task to at least one employee');
       }
     }
+    body.materials = await collectAttachments(f);
     const t = m.data.task ? await api('PATCH', `/api/tasks/${m.data.task.id}`, body) : await api('POST', '/api/tasks', body);
     closeModalObj(m);
     toast(m.data.task ? 'Changes saved' : admin ? `Assigned to ${t.assignees.map((a) => a.name).join(', ')}` : 'Added to your tasks', 'ok', { title: m.data.task ? 'Task updated' : t.title });
     scheduleRefresh();
   },
   async complete(f, m) {
-    const t = await api('POST', `/api/tasks/${m.data.task.id}/complete`, { note: f.note.value, materials: collectAttachments(f) });
+    const t = await api('POST', `/api/tasks/${m.data.task.id}/complete`, { note: f.note.value, materials: await collectAttachments(f) });
     closeModalObj(m);
     toast(`${fmtShort(t.completed_at)}${isAdmin() ? '' : ' — super admin notified'}`, 'ok', { title: 'Task done ✅' });
     scheduleRefresh();
   },
   async addWork(f, m) {
-    const materials = collectAttachments(f);
+    const materials = await collectAttachments(f);
     if (!materials.length) throw new Error('Add at least one file or link');
     await api('POST', `/api/tasks/${m.data.task.id}/materials`, { stage: 'completion', materials });
     closeModalObj(m); toast('Uploaded', 'ok'); scheduleRefresh();
@@ -1326,15 +1335,15 @@ const SUBMIT = {
       await api('PATCH', `/api/clients/${m.data.client.id}`, body);
       closeModalObj(m); toast('Client saved', 'ok'); return scheduleRefresh();
     }
+    const materials = await collectAttachments(f);
     const c = await api('POST', '/api/clients', body);
-    const materials = collectAttachments(f);
     if (materials.length) await api('POST', `/api/clients/${c.id}/materials`, { materials });
     closeModalObj(m); toast(c.name, 'ok', { title: 'Client added' });
     S.ui.clientTab = 'tasks';
     go(`clients/${c.id}`);
   },
   async clientMaterials(f, m) {
-    const materials = collectAttachments(f);
+    const materials = await collectAttachments(f);
     if (!materials.length) throw new Error('Add at least one file or link');
     await api('POST', `/api/clients/${m.data.id}/materials`, { materials });
     closeModalObj(m); toast('Saved', 'ok'); S.ui.clientTab = 'materials'; scheduleRefresh();
@@ -1460,8 +1469,9 @@ window.addEventListener('hashchange', () => { if (S.user) renderView(); });
 let lastMobile = isMobile();
 window.addEventListener('resize', () => { if (isMobile() !== lastMobile) { lastMobile = isMobile(); if (current) paint(); } });
 
-// ------------------------------------------------------------------ live updates: server push stream + safety polling
-let liveSeq = 0, liveAbort = null, refreshTimer = null;
+// ------------------------------------------------------------------ live updates: adaptive polling
+let refreshTimer = null, pollSession = null;
+let lastActivity = Date.now();
 function scheduleRefresh() {
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(refreshAll, 200);
@@ -1469,6 +1479,7 @@ function scheduleRefresh() {
 async function refreshAll() {
   if (!S.user) return;
   api('GET', '/api/me').then((d) => {
+    if (!S.user) return;
     const roleChanged = d.user.role !== S.user.role;
     S.user = d.user; S.unread = d.unread;
     if (roleChanged) { mountShell(); renderView(); } else updateBadges();
@@ -1477,64 +1488,76 @@ async function refreshAll() {
   if (S.notes.open) loadNotes();
   for (const m of [...stack]) m.refresh?.().catch(() => {});
 }
-async function connectLive() {
-  const my = ++liveSeq;
-  liveAbort?.abort();
-  while (my === liveSeq && S.token) {
+function showNewNotification(n) {
+  if (n.type === 'completed' || n.type === 'assigned') ding();
+  toast(n.body, n.type === 'completed' ? 'ok' : '', { title: n.title, ms: 7000, onClick: () => n.task_id && openTask(n.task_id) });
+  if (document.hidden && !S.pushOn && 'Notification' in window && Notification.permission === 'granted') {
+    navigator.serviceWorker?.ready.then((reg) => reg.showNotification(n.title, {
+      body: n.body, icon: '/icons/icon-192.png', badge: '/icons/badge-96.png', tag: `n${n.id}`,
+      data: { url: n.task_id ? `/#/task/${n.task_id}` : '/#/notifications' },
+    })).catch(() => {});
+  }
+}
+function stopPolling() {
+  if (pollSession) { clearTimeout(pollSession.timer); pollSession.controller?.abort(); }
+  pollSession = null;
+  clearTimeout(refreshTimer);
+}
+function startPolling() {
+  stopPolling();
+  pollSession = { version: null, lastId: null, timer: null, running: false, again: false };
+  lastActivity = Date.now();
+  pollNow();
+}
+async function pollNow() {
+  const session = pollSession;
+  if (!session || !S.user) return;
+  clearTimeout(session.timer);
+  if (session.running) { session.again = true; return; }
+  session.running = true;
+  try {
+    session.controller = new AbortController();
+    // Bound a hung request so Offline and retries still work after a network drop.
+    const timeout = setTimeout(() => session.controller.abort(), 20000);
+    let res;
     try {
-      liveAbort = new AbortController();
-      const res = await fetch('/api/stream', { headers: { Authorization: `Bearer ${S.token}` }, signal: liveAbort.signal, cache: 'no-store' });
-      if (res.status === 401) return logout(true);
-      if (!res.ok || !res.body) throw new Error('stream');
-      setLive(true);
-      scheduleRefresh(); // catch up on anything missed while disconnected
-      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
-      let buf = '';
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += value;
-        let i;
-        while ((i = buf.indexOf('\n\n')) >= 0) { handleLive(buf.slice(0, i)); buf = buf.slice(i + 2); }
-      }
-    } catch { /* network drop: retry below */ }
-    if (my !== liveSeq) return;
-    setLive(false);
-    await sleep(2500);
-  }
-}
-function handleLive(chunk) {
-  let event = 'message', data = '';
-  for (const line of chunk.split('\n')) {
-    if (line.startsWith('event:')) event = line.slice(6).trim();
-    else if (line.startsWith('data:')) data += line.slice(5).trim();
-  }
-  if (event === 'refresh') scheduleRefresh();
-  if (event === 'notify') {
-    const n = JSON.parse(data);
-    S.unread++; updateBadges();
-    if (n.type === 'completed' || n.type === 'assigned') ding();
-    toast(n.body, n.type === 'completed' ? 'ok' : '', { title: n.title, ms: 7000, onClick: () => n.task_id && openTask(n.task_id) });
-    if (document.hidden && !S.pushOn && 'Notification' in window && Notification.permission === 'granted') {
-      navigator.serviceWorker?.ready.then((reg) => reg.showNotification(n.title, {
-        body: n.body, icon: '/icons/icon-192.png', badge: '/icons/badge-96.png', tag: `n${n.id}`, data: { url: n.task_id ? `/#/task/${n.task_id}` : '/#/notifications' },
-      }));
+      res = await fetch(`/api/sync?n=${session.lastId ?? ''}`, { cache: 'no-store',
+        headers: { Authorization: `Bearer ${S.token}` }, signal: session.controller.signal });
+    } finally { clearTimeout(timeout); }
+    if (session !== pollSession) return;
+    if (res.status === 401) { logout(true); return; }
+    if (!res.ok) throw new Error('Sync failed');
+    const data = await res.json();
+    if (session !== pollSession) return;
+    setLive(true);
+    if (data.version !== session.version) {
+      lastActivity = Date.now();
+      scheduleRefresh();
     }
-    scheduleRefresh();
+    session.version = data.version;
+    S.unread = data.unread; updateBadges();
+    for (const n of data.notifications) showNewNotification(n);
+    // The API caps a page at 20. Drain the backlog before advancing to last_id.
+    session.lastId = data.notifications.length ? data.notifications.at(-1).id : data.last_id;
+    if (session.lastId < data.last_id) session.again = true;
+  } catch {
+    if (session === pollSession) setLive(false);
+  } finally {
+    session.running = false;
+    if (session === pollSession && S.user) {
+      const delay = session.again ? 0 : document.hidden ? 30000 : Date.now() - lastActivity >= 120000 ? 8000 : 3000;
+      session.again = false;
+      session.timer = setTimeout(pollNow, delay);
+    }
   }
 }
+document.addEventListener('click', () => { lastActivity = Date.now(); }, { capture: true });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden || !S.user) return;
-  if (!S.live) connectLive();
-  scheduleRefresh();
+  if (!S.user) return;
+  pollNow();
+  if (!document.hidden) scheduleRefresh();
 });
-window.addEventListener('online', () => { if (S.user) connectLive(); });
-// Safety net: re-sync every 15 s if the live stream is down, every 60 s otherwise.
-let lastPoll = Date.now();
-setInterval(() => {
-  if (!S.user || document.hidden) return;
-  if (!S.live || Date.now() - lastPoll > 60000) { lastPoll = Date.now(); scheduleRefresh(); }
-}, 15000);
+window.addEventListener('online', () => { if (S.user) pollNow(); });
 
 // ------------------------------------------------------------------ push notifications
 const b64ToU8 = (b64) => {
@@ -1590,7 +1613,7 @@ function signIn({ token, user }) {
 }
 async function logout(expired = false) {
   const token = S.token;
-  liveSeq++; liveAbort?.abort(); setLive(false);
+  stopPolling(); setLive(false);
   while (stack.length) closeTop(true);
   closeNotes(true);
   try {
@@ -1608,7 +1631,7 @@ function startApp() {
   mountShell();
   if (!location.hash || location.hash === '#/') history.replaceState(null, '', `#/${defaultRoute()}`);
   renderView();
-  connectLive();
+  startPolling();
   if ('Notification' in window && Notification.permission === 'granted') subscribePush().catch(() => {});
 }
 async function boot() {

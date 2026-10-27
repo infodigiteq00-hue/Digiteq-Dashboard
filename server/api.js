@@ -1,11 +1,12 @@
 // Cloudflare Pages API. Helpers and route state are scoped to each request.
 import { generateVapid, sendPush } from './push.js';
 import { localParts, startOfToday, nextHour } from './time.js';
+import { FINANCE_SCHEMA, registerFinance } from './finance.js';
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('superadmin','employee')),
-  created_at TEXT NOT NULL
+  is_owner INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TEXT NOT NULL
@@ -63,14 +64,28 @@ CREATE TABLE IF NOT EXISTS task_updates (
 CREATE INDEX IF NOT EXISTS task_updates_task ON task_updates(task_id, created_at);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 `
+  .concat(FINANCE_SCHEMA)
   .split(';')
   .map((sql) => sql.trim())
   .filter(Boolean);
+// Owners are super admins with finance access. Older databases get the column and their first super admin becomes owner.
+async function migrate(DB) {
+  const cols = (await DB.prepare('PRAGMA table_info(users)').all()).results;
+  if (cols.some((c) => c.name === 'is_owner')) return;
+  try {
+    await DB.batch([
+      DB.prepare('ALTER TABLE users ADD COLUMN is_owner INTEGER NOT NULL DEFAULT 0'),
+      DB.prepare("UPDATE users SET is_owner = 1 WHERE id = (SELECT MIN(id) FROM users WHERE role = 'superadmin')"),
+    ]);
+  } catch (err) {
+    if (!/duplicate column/i.test(String(err?.message))) throw err; // another isolate migrated first
+  }
+}
 let schemaPromise;
 let lastHourlyCheck = 0;
 async function ensureSchema(DB) {
   if (!schemaPromise) {
-    schemaPromise = DB.batch(SCHEMA.map((sql) => DB.prepare(sql))).catch((err) => {
+    schemaPromise = DB.batch(SCHEMA.map((sql) => DB.prepare(sql))).then(() => migrate(DB)).catch((err) => {
       schemaPromise = undefined;
       throw err;
     });
@@ -192,9 +207,11 @@ function createApi(context) {
     return token;
   }
   const publicUser = (u) =>
-    u && { id: u.id, name: u.name, username: u.username, role: u.role, created_at: u.created_at };
+    u && { id: u.id, name: u.name, username: u.username, role: u.role, is_owner: !!u.is_owner, created_at: u.created_at };
 
   const isAdmin = (u) => u.role === 'superadmin';
+  const isOwner = (u) => u.role === 'superadmin' && !!u.is_owner;
+  const ownerIds = async () => (await all("SELECT id FROM users WHERE role = 'superadmin' AND is_owner = 1")).map((r) => r.id);
   const requireAdmin = (u) => {
     if (!isAdmin(u)) fail(403, 'Only the super admin can do this');
   };
@@ -395,8 +412,8 @@ function createApi(context) {
       const {
         meta: { last_row_id, changes },
       } = await run(
-        `INSERT INTO users (name, username, password_hash, role, created_at)
-    SELECT ?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM users)`,
+        `INSERT INTO users (name, username, password_hash, role, is_owner, created_at)
+    SELECT ?,?,?,?,1,? WHERE NOT EXISTS (SELECT 1 FROM users)`,
         name,
         username,
         await hashPassword(password),
@@ -430,6 +447,7 @@ function createApi(context) {
   });
   route('GET', '/api/me', async ({ user }) => ({
     user: publicUser(user),
+    currency: env.CURRENCY || 'INR',
     unread: (await get('SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND is_read = 0', user.id))
       .n,
   }));
@@ -444,8 +462,9 @@ function createApi(context) {
 
   // --- users / team
   route('GET', '/api/users', async ({ user }) => {
-    const rows = await all('SELECT id, name, username, role, created_at FROM users ORDER BY role DESC, name');
+    const rows = await all('SELECT id, name, username, role, is_owner, created_at FROM users ORDER BY role DESC, is_owner DESC, name');
     if (!isAdmin(user)) return rows.map(({ id, name, role }) => ({ id, name, role }));
+    for (const r of rows) r.is_owner = !!r.is_owner;
     const stats = await all(
       `SELECT ta.user_id, SUM(t.status != 'done') AS open, SUM(t.status = 'done') AS done,
                      SUM(t.status != 'done' AND t.deadline IS NOT NULL AND t.deadline < ?) AS overdue
@@ -466,6 +485,7 @@ function createApi(context) {
       username = str(body.username, 50),
       password = String(body.password || '');
     const role = body.role === 'superadmin' ? 'superadmin' : 'employee';
+    const owner = isOwner(user) && role === 'superadmin' && body.is_owner ? 1 : 0;
     if (!name || !username) fail(400, 'Name and username are required');
     if (password.length < 6) fail(400, 'Password must be at least 6 characters');
     if (await get('SELECT 1 FROM users WHERE username = ?', username))
@@ -473,11 +493,12 @@ function createApi(context) {
     const {
       meta: { last_row_id },
     } = await run(
-      'INSERT INTO users (name, username, password_hash, role, created_at) VALUES (?,?,?,?,?)',
+      'INSERT INTO users (name, username, password_hash, role, is_owner, created_at) VALUES (?,?,?,?,?,?)',
       name,
       username,
       await hashPassword(password),
       role,
+      owner,
       now(),
     );
     await broadcast();
@@ -489,17 +510,24 @@ function createApi(context) {
       (await get('SELECT * FROM users WHERE id = ?', Number(params.id))) || fail(404, 'User not found');
     const name = str(body.name, 100) || target.name;
     const role = body.role ? (body.role === 'superadmin' ? 'superadmin' : 'employee') : target.role;
+    if (target.is_owner && !isOwner(user)) fail(403, 'Only an owner can change an owner’s account');
+    let owner = 'is_owner' in body && isOwner(user) ? (body.is_owner ? 1 : 0) : target.is_owner ? 1 : 0;
+    if (role !== 'superadmin') owner = 0;
+    if (target.is_owner && !owner && (await ownerIds()).length === 1) fail(400, 'You need at least one owner');
     if (target.role === 'superadmin' && role !== 'superadmin' && (await adminIds()).length === 1)
       fail(400, 'You need at least one super admin');
     if (body.password && String(body.password).length < 6)
       fail(400, 'Password must be at least 6 characters');
     const changed = await run(
-      `UPDATE users SET name = ?, role = ? WHERE id = ?
-    AND (role != 'superadmin' OR ? = 'superadmin' OR (SELECT COUNT(*) FROM users WHERE role = 'superadmin') > 1)`,
+      `UPDATE users SET name = ?, role = ?, is_owner = ? WHERE id = ?
+    AND (role != 'superadmin' OR ? = 'superadmin' OR (SELECT COUNT(*) FROM users WHERE role = 'superadmin') > 1)
+    AND (is_owner = 0 OR ? = 1 OR (SELECT COUNT(*) FROM users WHERE is_owner = 1) > 1)`,
       name,
       role,
+      owner,
       target.id,
       role,
+      owner,
     );
     if (!changed.meta.changes) fail(400, 'You need at least one super admin');
     if (body.password) {
@@ -521,6 +549,8 @@ function createApi(context) {
     const target = (await get('SELECT * FROM users WHERE id = ?', id)) || fail(404, 'User not found');
     if (target.role === 'superadmin' && (await adminIds()).length === 1)
       fail(400, 'You need at least one super admin');
+    if (target.is_owner && !isOwner(user)) fail(403, 'Only an owner can remove an owner');
+    if (target.is_owner && (await ownerIds()).length === 1) fail(400, 'You need at least one owner');
     const deleted = await run(
       `DELETE FROM users WHERE id = ?
     AND (role != 'superadmin' OR (SELECT COUNT(*) FROM users WHERE role = 'superadmin') > 1)`,
@@ -595,6 +625,7 @@ function createApi(context) {
       ),
     );
     c.can_edit = isAdmin(user);
+    if (isOwner(user)) c.finance = await clientFinance(c.id);
     return c;
   });
   route('PATCH', '/api/clients/:id', async ({ user, body, params }) => {
@@ -1130,6 +1161,7 @@ function createApi(context) {
         t,
         startOfDay.toISOString(),
       ),
+      finance: isOwner(user) ? await financeSummary() : null,
       recent_done: await decorate(
         await all(`${TASK_SELECT} WHERE t.status = 'done' ORDER BY t.completed_at DESC LIMIT 8`),
       ),
@@ -1216,6 +1248,11 @@ function createApi(context) {
     }
   }
 
+  const { clientFinance, financeSummary, sendFinanceAlert } = registerFinance({
+    route, all, get, run, stmt, batch, DB, fail, files, str, now, isOwner, ownerIds, notify, broadcast, TIMEZONE, localParts,
+    currency: env.CURRENCY || 'INR',
+  });
+
   route('POST', '/api/upload', async ({ request }) => {
     const bucket = files();
     const max = 25 * 1024 * 1024;
@@ -1250,6 +1287,7 @@ function createApi(context) {
     if (result.meta.changes !== 1) return;
     await sendDigest();
     await sendReminders();
+    if (hour === WORK_START) await sendFinanceAlert();
   }
   route(
     'POST',

@@ -1,0 +1,28 @@
+// Owner + finance checks. Run after test:flow against the same local server: npm run dev, npm run test:flow, npm run test:finance.
+const base = process.env.TEST_URL || 'http://localhost:8788';
+if (!['localhost', '127.0.0.1', '[::1]'].includes(new URL(base).hostname)) throw new Error('Use a local, disposable test database');
+const B=base;
+let n=0; const ok=(c,m)=>{n++; console.log((c?'PASS ':'FAIL ')+m); if(!c) process.exitCode=1;};
+const call=async(m,u,t,b)=>{const r=await fetch(B+u,{method:m,headers:{'Content-Type':'application/json',...(t?{Authorization:'Bearer '+t}:{})},body:b?JSON.stringify(b):undefined});return [r.status, await r.json().catch(()=>null)]};
+let [s,d]=await call('POST','/api/login',null,{username:'smokeadmin',password:'local-smoke-password'});
+const O=d.token; ok(s===200 && d.user.is_owner===true,'existing first super admin migrated to owner');
+const tag=Date.now();
+[s,d]=await call('POST','/api/users',O,{name:'Admin NoMoney',username:'adm'+tag,password:'secret12',role:'superadmin'}); const admId=d.id;
+[s,d]=await call('POST','/api/login',null,{username:'adm'+tag,password:'secret12'}); const A=d.token; ok(d.user.is_owner===false,'new super admin is not owner');
+[s]=await call('GET','/api/finance/overview',A); ok(s===403,'plain super admin blocked from finance');
+[s,d]=await call('PATCH','/api/users/'+admId,A,{is_owner:true}); [s,d]=await call('GET','/api/me',A); ok(d.user.is_owner===false,'super admin cannot make self owner');
+[s,d]=await call('POST','/api/clients',O,{name:'Fin Client '+tag}); const c=d.id;
+[s,d]=await call('POST','/api/finance/commercials',O,{client_id:c,title:'SMM retainer',billing:'monthly',amount:25000,start_date:'2026-01-01'}); const cm=d.id; ok(s===200&&d.billing==='monthly','create commercial');
+[s,d]=await call('POST','/api/finance/commercials/generate',O,{period:'2026-10'}); ok(s===200&&d.created>=1,'generate monthly invoices: '+JSON.stringify(d));
+[s,d]=await call('POST','/api/finance/commercials/generate',O,{period:'2026-10'}); ok(d.created===0,'generate again creates no duplicates');
+[s,d]=await call('POST','/api/finance/invoices',O,{client_id:c,title:'Logo design',amount:10000,issue_date:'2026-09-01',due_date:'2026-09-15'}); const inv=d.id; ok(s===200&&d.state==='overdue'&&d.number.startsWith('INV-'),'overdue invoice '+d.number);
+[s,d]=await call('POST',`/api/finance/invoices/${inv}/payments`,O,{amount:20000}); ok(s===400,'overpayment rejected: '+d.error);
+[s,d]=await call('POST',`/api/finance/invoices/${inv}/payments`,O,{amount:4000,method:'UPI'}); ok(d.state==='overdue'&&d.balance===6000,'partial payment, balance '+d.balance);
+[s,d]=await call('GET','/api/finance/overview',O); const due=d.dues.find(x=>x.client_id===c); ok(due&&due.balance===31000&&due.overdue===6000,'client dues '+JSON.stringify(due&&{b:due.balance,o:due.overdue})); ok(d.totals.mrr>=25000,'MRR '+d.totals.mrr);
+[s,d]=await call('POST','/api/finance/opportunities',O,{name:'Cafe Bloom website',company:'Cafe Bloom',value:80000,stage:'proposal',next_follow_up:'2026-10-20'}); const op=d.id; ok(d.probability===50,'opportunity stage probability');
+[s,d]=await call('POST',`/api/finance/opportunities/${op}/convert`,O); ok(s===200&&d.opportunity.stage==='won'&&d.client_id,'won → client created');
+[s,d]=await call('GET','/api/clients/'+c,O); ok(d.finance&&d.finance.totals.due===31000,'client page finance for owner');
+[s,d]=await call('GET','/api/clients/'+c,A); ok(!d.finance,'client page hides finance for non-owner');
+[s,d]=await call('GET','/api/overview',O); ok(d.finance&&d.finance.outstanding>0,'home money summary for owner');
+[s,d]=await call('DELETE','/api/users/'+(await call('GET','/api/me',O))[1].user.id,A); ok(s===403||s===400,'admin cannot delete owner');
+console.log(n,'checks');

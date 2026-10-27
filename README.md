@@ -20,7 +20,20 @@ There is one codebase: the same app runs as a **website**, an installable **PC a
 | – | **Live updates on every page**: changes show up within a few seconds with no refresh needed (green dot = live). It re-syncs when you reopen the app | everywhere |
 | – | **No pull-to-refresh on phones**: swiping down never reloads the app | phone |
 
-Roles: **Super admin** has full control (clients, tasks, team). **Employee** sees their tasks, can view clients, and keeps their own notes and self-added tasks.
+Roles: **Owner** is a super admin who also sees **Finance**. **Super admin** has full control of clients, tasks and team, but no money screens. **Employee** sees their own tasks, can view clients, and keeps their own notes and self-added tasks. The account created at first-run setup is the first owner. Only an owner can make another super admin an owner (Team → edit → *Owner*), and there is always at least one owner.
+
+### Owner · Finance
+
+Only owners can see these screens: the server refuses finance requests from anyone else, and clients' money details are hidden from other roles.
+
+| Screen | What it's for |
+|--------|---------------|
+| **Overview** | Outstanding, overdue, collected this month, monthly recurring revenue and likely pipeline value. Also shows **client dues** (who owes what, and since when), invoices coming due, sales follow-ups and recent payments |
+| **Receivables** | Invoices with tabs for Due / Overdue / Paid / Cancelled. Open an invoice to **record payments** (part payments allowed, with method and UTR/cheque reference). Status updates automatically (Due → Part paid → Paid, or Overdue after the due date) |
+| **Commercials** | What each client pays: one-time projects or monthly / quarterly / yearly retainers, with dates, notes and the signed quote/contract file. **Generate** raises this month's retainer invoices in one click and never duplicates them |
+| **Opportunities** | Sales pipeline: Lead → Contacted → Proposal sent → Negotiation, as a drag-and-drop board on PC. Each deal has a value, a "% likely" figure and a follow-up date. **Won** turns the deal into a client; **Lost** records the reason |
+
+Each client page has a **Finance** tab for owners, showing that client's commercials, invoices and dues. Owners get a 💰 alert when another owner records a payment, plus a morning "money check" at the start of work hours listing overdue invoices and follow-ups due. Amounts are in `CURRENCY` (default `INR`) and are entered as totals (no separate tax lines).
 
 ## Run it
 
@@ -43,6 +56,7 @@ WORK_START=9
 WORK_END=20
 VAPID_SUBJECT=mailto:admin@digiteq.local
 CRON_SECRET=replace-with-a-random-local-secret
+CURRENCY=INR
 ```
 
 `TIMEZONE` is an IANA time zone. Work hours are inclusive: defaults are 09:00 through 20:00 in India. The overview's **Done today**, hourly job slots, and next digest time all use this zone. Local requests to `/api/sync` also check the hourly job, at most once a minute per isolate.
@@ -52,6 +66,7 @@ To repeat the integration smoke test against a **disposable local workspace**, k
 ```bash
 npm run test:flow
 npm run test:runtime
+npm run test:finance
 ```
 
 The flow test creates a local super admin (`smokeadmin` / `local-smoke-password`) on an empty database, then exercises employees, client logos, assignments, raw uploads, progress, digest/completion alerts, private notes, sync, downloads and permissions. It retains test fixtures for browser checks. On an existing local test database, set `TEST_ADMIN_USERNAME` and `TEST_ADMIN_PASSWORD` to its admin credentials. Never use these test credentials for a deployed workspace.
@@ -67,7 +82,7 @@ Use the **Digiteq Cloudflare account**, where Pages project **`digiteqdash`** li
 1. In the Digiteq account, create a **D1 database** named `digiteq` and an **R2 bucket** named `digiteq-files`. [R2 requires enabling an R2 subscription and billing details, including for the free tier](https://developers.cloudflare.com/r2/get-started/).
 2. In the Pages project's build settings, leave the **build command empty**, set **build output directory** to `public`, and **root directory** to `/`. Static assets come from `public/`; Pages builds the API from `functions/` automatically.
 3. Under **Settings → Bindings**, add a **D1 database** binding named **`DB`** pointing to `digiteq`, and an **R2 bucket** binding named **`FILES`** pointing to `digiteq-files`. Configure the production environment (and preview separately if you use previews). Missing bindings return JSON errors pointing back here.
-4. Set environment variables: `TIMEZONE=Asia/Kolkata`, `WORK_START=9`, `WORK_END=20`, and a long random **`CRON_SECRET`**, stored as a secret. Optionally set `VAPID_SUBJECT` to a contact email such as `mailto:admin@yourcompany.com`. Use compatibility date `2025-01-01` or later. Redeploy after changing bindings or variables.
+4. Set environment variables: `TIMEZONE=Asia/Kolkata`, `WORK_START=9`, `WORK_END=20`, `CURRENCY=INR`, and a long random **`CRON_SECRET`**, stored as a secret. Optionally set `VAPID_SUBJECT` to a contact email such as `mailto:admin@yourcompany.com`. Use compatibility date `2025-01-01` or later. Redeploy after changing bindings or variables.
 5. Deploy the small scheduled Worker **after authenticating Wrangler to the Digiteq account**:
 
    ```bash
@@ -114,9 +129,11 @@ functions/api/[[path]].js    Pages API entry point
 server/api.js               async API, D1 schema, permissions, digest/reminder jobs
 server/push.js              WebCrypto push encryption and VAPID
 server/time.js              scheduling in the configured time zone
+server/finance.js           owner-only finance API: commercials, invoices, payments, opportunities
 cron/                       scheduled Worker (every 15 minutes)
 public/index.html           app shell
 public/app.js               front-end, adaptive sync polling and direct uploads
+public/finance.js           owner Finance screens
 public/styles.css           styles (light + dark mode, phone + desktop)
 public/sw.js                service worker: install, offline shell, push notifications
 public/manifest.webmanifest app name/icons for installing

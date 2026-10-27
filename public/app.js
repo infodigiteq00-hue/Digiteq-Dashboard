@@ -1,4 +1,5 @@
 // Digiteq Dashboard front-end. Plain JS, no build step. Works as a website, an installed PC app and a phone app.
+import { registerFinance, clientFinanceTab, financeBanner, dropDeal } from './finance.js';
 
 // ------------------------------------------------------------------ state & storage
 const store = {
@@ -21,6 +22,8 @@ const S = {
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const isAdmin = () => S.user?.role === 'superadmin';
+const isOwner = () => isAdmin() && !!S.user?.is_owner;
+const roleLabel = (u) => (u.role !== 'superadmin' ? 'Employee' : u.is_owner ? 'Owner' : 'Super admin');
 const isMobile = () => matchMedia('(max-width: 900px)').matches;
 
 // ------------------------------------------------------------------ api
@@ -419,7 +422,7 @@ VIEWS.home = {
       <div class="ico">${ic(icon)}</div><div><b>${n || 0}</b><span>${label}</span></div></button>`;
     const maxOpen = Math.max(1, ...o.team.map((u) => u.open));
     const soon = o.due_soon.length + o.client_deadlines.length;
-    return `${notifBanner()}
+    return `${notifBanner()}${o.finance ? financeBanner(o.finance) : ''}
       <div class="hero"><div><h2>${greet}, ${esc(S.user.name.split(' ')[0])} 👋</h2>
         <div class="muted" style="margin-top:4px">${c.overdue ? `<b style="color:var(--red)">${plural(c.overdue, 'task')} overdue</b> · ` : ''}${plural((c.todo || 0) + (c.in_progress || 0), 'open task')} across ${plural(c.clients || 0, 'client')}</div></div>
         <button class="btn hide-mobile" data-act="newClient">${ic('plus')} New client</button></div>
@@ -503,6 +506,7 @@ VIEWS.client = {
     const admin = c.can_edit;
     const open = c.tasks.filter((t) => t.status !== 'done'), done = c.tasks.filter((t) => t.status === 'done');
     const overdue = open.filter(isOverdue).length;
+    if (S.ui.clientTab === 'finance' && !c.finance) S.ui.clientTab = 'tasks';
     const tab = S.ui.clientTab;
     const tabBtn = (k, label, n) => `<button class="${tab === k ? 'on' : ''}" data-act="clientTab" data-tab="${k}">${label}${n != null ? `<span class="n">${n}</span>` : ''}</button>`;
     let body = '';
@@ -521,6 +525,8 @@ VIEWS.client = {
             ${d.done ? '<span class="chip green">Done</span>' : `<span class="chip ${dueInfo(d.due_at).cls}">${dueInfo(d.due_at).text}</span>`}
             ${admin ? `<button class="icon-btn sm" data-act="delDeadline" data-id="${d.id}" aria-label="Delete">${ic('trash')}</button>` : ''}
           </div>`).join('')}</div>` : `<div class="card">${empty('calendar', 'No deadlines yet', 'Add milestones like launches, reviews or delivery dates.')}</div>`}`;
+    } else if (tab === 'finance') {
+      body = clientFinanceTab(c);
     } else if (tab === 'materials') {
       body = `${admin ? `<div class="row" style="margin-bottom:12px"><button class="btn primary sm" data-act="addClientMaterial" data-id="${c.id}">${ic('upload')} Add files or links</button></div>` : ''}
         ${c.materials.length ? materialList(c.materials) : `<div class="card">${empty('clip', 'No materials yet', 'Brand files, briefs, drive folders, logins docs…')}</div>`}`;
@@ -552,7 +558,7 @@ VIEWS.client = {
       </div>
       <div class="tabs" style="margin-top:20px">
         ${tabBtn('tasks', 'Tasks', open.length)}${tabBtn('deadlines', 'Deadlines', c.deadlines.filter((d) => !d.done).length)}
-        ${tabBtn('materials', 'Materials & links', c.materials.length)}${tabBtn('info', 'Info')}
+        ${tabBtn('materials', 'Materials & links', c.materials.length)}${c.finance ? tabBtn('finance', 'Finance') : ''}${tabBtn('info', 'Info')}
       </div>
       ${body}`;
   },
@@ -672,7 +678,7 @@ VIEWS.team = {
     return `<div class="card list">${users.map((x) => `
         <div class="list-item">
           ${avatar(x)}
-          <div class="grow"><div class="row" style="gap:8px"><b class="ellipsis">${esc(x.name)}</b>${x.role === 'superadmin' ? '<span class="chip indigo">Super admin</span>' : ''}${x.id === S.user.id ? '<span class="chip">You</span>' : ''}</div>
+          <div class="grow"><div class="row" style="gap:8px"><b class="ellipsis">${esc(x.name)}</b>${x.role === 'superadmin' ? `<span class="chip ${x.is_owner ? 'amber' : 'indigo'}">${roleLabel(x)}</span>` : ''}${x.id === S.user.id ? '<span class="chip">You</span>' : ''}</div>
             <div class="meta" style="margin-top:2px"><span>@${esc(x.username)}</span><span class="blue">${x.open} open</span>${x.overdue ? `<span class="red">${x.overdue} overdue</span>` : ''}<span class="green">${x.done} done</span></div></div>
           <button class="btn sm hide-mobile" data-act="viewUserTasks" data-id="${x.id}">View tasks</button>
           <button class="icon-btn sm hide-desktop" data-act="viewUserTasks" data-id="${x.id}" aria-label="View tasks">${ic('tasks')}</button>
@@ -682,7 +688,7 @@ VIEWS.team = {
   },
 };
 
-const NOTIF_ICON = { completed: ['check', 'var(--green)', 'var(--green-soft)'], assigned: ['briefcase', 'var(--primary-text)', 'var(--primary-soft)'], self_added: ['plus', 'var(--blue)', 'var(--blue-soft)'], updated: ['edit', 'var(--amber)', 'var(--amber-soft)'], reopened: ['undo', 'var(--amber)', 'var(--amber-soft)'], digest: ['pulse', 'var(--blue)', 'var(--blue-soft)'], reminder: ['clock', 'var(--amber)', 'var(--amber-soft)'] };
+const NOTIF_ICON = { completed: ['check', 'var(--green)', 'var(--green-soft)'], assigned: ['briefcase', 'var(--primary-text)', 'var(--primary-soft)'], self_added: ['plus', 'var(--blue)', 'var(--blue-soft)'], updated: ['edit', 'var(--amber)', 'var(--amber-soft)'], reopened: ['undo', 'var(--amber)', 'var(--amber-soft)'], digest: ['pulse', 'var(--blue)', 'var(--blue-soft)'], reminder: ['clock', 'var(--amber)', 'var(--amber-soft)'], payment: ['check', 'var(--green)', 'var(--green-soft)'], finance: ['inbox', 'var(--red)', 'var(--red-soft)'] };
 VIEWS.notifications = {
   title: () => 'Notifications', sub: (list) => `${list.filter((n) => !n.is_read).length} unread`,
   action: (list) => (list?.some((n) => !n.is_read) ? { label: 'Mark all read', act: 'readAll', plain: true } : null),
@@ -715,7 +721,7 @@ VIEWS.settings = {
     const card = (icon, title, text, right) => `<div class="card pad setting"><div class="mat-icon">${ic(icon)}</div>
       <div class="grow"><b>${title}</b><div class="small muted" style="margin:2px 0 10px">${text}</div>${right}</div></div>`;
     return `<div class="card pad row" style="gap:16px">${avatar(S.user, 'lg')}<div class="grow"><h2 style="font-size:20px">${esc(S.user.name)}</h2>
-        <div class="muted">@${esc(S.user.username)} · ${isAdmin() ? 'Super admin' : 'Employee'}</div></div>
+        <div class="muted">@${esc(S.user.username)} · ${roleLabel(S.user)}</div></div>
         <button class="btn danger hide-mobile" data-act="logout">${ic('logout')} Log out</button></div>
       <div class="settings-grid section">
         ${card('sun', 'Appearance', 'Choose how the app looks on this device.', `<div class="seg">
@@ -730,6 +736,7 @@ VIEWS.settings = {
           <label class="field" style="margin-bottom:10px"><span>New</span><input class="input" type="password" name="password" autocomplete="new-password" minlength="6" required></label></div>
           <button class="btn sm">Update password</button></div></form>
       </div>
+      ${isAdmin() ? `<div class="section hide-desktop"><button class="btn block lg" data-act="nav" data-to="team">${ic('users')} Manage team</button></div>` : ''}
       <div class="section hide-desktop"><button class="btn danger block lg" data-act="logout">${ic('logout')} Log out</button></div>`;
   },
 };
@@ -750,7 +757,7 @@ async function renderView(soft = false) {
     return renderView();
   }
   const v = VIEWS[r.name];
-  if (!v || (v.admin && !isAdmin())) { history.replaceState(null, '', `#/${defaultRoute()}`); return renderView(); }
+  if (!v || (v.admin && !isAdmin()) || (v.owner && !isOwner())) { history.replaceState(null, '', `#/${defaultRoute()}`); return renderView(); }
   if (!current || current.r.key !== r.key) soft = false;
   const seq = ++viewSeq;
   updateChrome(r, v, soft ? current.data : null);
@@ -789,6 +796,7 @@ function paint(keep = true) {
 function updateChrome(r, v, data) {
   const section = r.name === 'client' ? 'clients' : r.name;
   $$('[data-nav]').forEach((n) => n.classList.toggle('active', n.dataset.nav === section));
+  if (['receivables', 'commercials', 'pipeline'].includes(section)) $$('.tabbar [data-nav="finance"]').forEach((n) => n.classList.add('active'));
   $('[data-act="back"]').classList.toggle('hidden', !v.back);
   if (data) {
     $('#title').textContent = v.title(data);
@@ -823,7 +831,11 @@ function mountShell() {
   const main = admin
     ? [['home', 'Overview', 'home'], ['clients', 'Clients', 'briefcase'], ['tasks', 'Tasks', 'tasks'], ['updates', 'Updates', 'pulse'], ['team', 'Team', 'users']]
     : [['tasks', 'My tasks', 'tasks'], ['clients', 'Clients', 'briefcase']];
-  const tabs = admin
+  const owner = isOwner();
+  const money = [['finance', 'Overview', 'spark'], ['receivables', 'Receivables', 'inbox'], ['commercials', 'Commercials', 'file'], ['pipeline', 'Opportunities', 'arrow']];
+  const tabs = owner
+    ? [['home', 'Home', 'home'], ['clients', 'Clients', 'briefcase'], ['notes', 'Notes', 'note'], ['tasks', 'Tasks', 'tasks'], ['finance', 'Money', 'inbox']]
+    : admin
     ? [['home', 'Home', 'home'], ['clients', 'Clients', 'briefcase'], ['notes', 'Notes', 'note'], ['tasks', 'Tasks', 'tasks'], ['team', 'Team', 'users']]
     : [['tasks', 'Tasks', 'tasks'], ['clients', 'Clients', 'briefcase'], ['notes', 'Notes', 'note'], ['notifications', 'Alerts', 'bell'], ['settings', 'Me', 'user']];
   const navBtn = ([k, label, icon]) => `<button class="nav-item" data-act="nav" data-to="${k}" data-nav="${k}">${ic(icon)}<span>${label}</span></button>`;
@@ -832,6 +844,7 @@ function mountShell() {
       <div class="brand"><img src="/icons/icon-192.png" alt=""><div><b>Digiteq</b><span>Company dashboard</span></div></div>
       <div class="nav-label">Workspace</div>
       ${main.map(navBtn).join('')}
+      ${owner ? `<div class="nav-label">Owner · Finance</div>${money.map(navBtn).join('')}` : ''}
       <div class="nav-label">Personal</div>
       <button class="nav-item" data-act="toggleNotes" data-notes-nav>${ic('note')}<span>My notes</span><span class="pill">Pop-up</span></button>
       <button class="nav-item" data-act="nav" data-to="notifications" data-nav="notifications">${ic('bell')}<span>Notifications</span><span class="count hidden" data-badge></span></button>
@@ -839,7 +852,7 @@ function mountShell() {
       <div class="install-card ${S.installEvt && !standalone() ? '' : 'hidden'}" data-install><b>Get the desktop app</b>Open Digiteq in its own window.
         <button class="btn sm" data-act="install">${ic('download')} Install</button></div>
       <button class="me-card" data-act="nav" data-to="settings" data-nav="settings">${avatar(S.user)}
-        <div class="grow"><b class="ellipsis" style="display:block">${esc(S.user.name)}</b><span class="small">${admin ? 'Super admin' : 'Employee'}</span></div>${ic('settings')}</button>
+        <div class="grow"><b class="ellipsis" style="display:block">${esc(S.user.name)}</b><span class="small">${roleLabel(S.user)}</span></div>${ic('settings')}</button>
     </aside>
     <div class="main">
       <header class="topbar">
@@ -1125,6 +1138,8 @@ function openUserForm(u = null) {
       <label class="field"><span>Role</span><select class="input" name="role">
         <option value="employee" ${u?.role !== 'superadmin' ? 'selected' : ''}>Employee — own tasks, notes, clients</option>
         <option value="superadmin" ${u?.role === 'superadmin' ? 'selected' : ''}>Super admin — full control</option></select></label>
+      ${isOwner() ? `<label class="row owner-toggle"><input type="checkbox" name="is_owner" ${u?.is_owner ? 'checked' : ''}>
+        <span><b>Owner</b> — also sees Finance: commercials, receivables, client dues and opportunities. Only for super admins.</span></label>` : ''}
       ${u ? '' : '<p class="small muted">Share the username and password with the employee. They can change the password later in Settings.</p>'}`,
     foot: `<button type="button" class="btn" data-act="closeModal">Cancel</button><button class="btn primary lg">${u ? 'Save' : 'Add employee'}</button>`,
   });
@@ -1262,6 +1277,8 @@ const ACT = {
     if (el.dataset.task) openTask(el.dataset.task);
     else if (el.dataset.type === 'digest') go('updates');
     else if (el.dataset.type === 'reminder') go('tasks');
+    else if (el.dataset.type === 'payment' && isOwner()) go('receivables');
+    else if (el.dataset.type === 'finance' && isOwner()) go('finance');
   },
   async readAll() { await api('POST', '/api/notifications/read', {}); scheduleRefresh(); },
   enablePush: () => enablePush(),
@@ -1355,6 +1372,7 @@ const SUBMIT = {
   },
   async user(f, m) {
     const body = { name: f.name.value, password: f.password.value, role: f.role.value };
+    if (f.is_owner) body.is_owner = f.is_owner.checked && f.role.value === 'superadmin';
     if (m.data.user) await api('PATCH', `/api/users/${m.data.user.id}`, body);
     else await api('POST', '/api/users', { ...body, username: f.username.value });
     closeModalObj(m); toast(m.data.user ? 'Saved' : 'Employee added', 'ok'); scheduleRefresh();
@@ -1398,11 +1416,12 @@ const SUBMIT = {
 };
 
 // ------------------------------------------------------------------ board drag & drop (desktop)
-let dragId = null;
+let dragId = null, dragKind = 'task';
 document.addEventListener('dragstart', (e) => {
   const card = e.target.closest?.('.task[draggable="true"]');
   if (!card) return;
   dragId = card.dataset.id;
+  dragKind = card.dataset.kind || 'task';
   card.classList.add('dragging');
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/plain', dragId);
@@ -1421,6 +1440,7 @@ document.addEventListener('drop', async (e) => {
   e.preventDefault();
   col.classList.remove('drop');
   const id = dragId; dragId = null;
+  if (dragKind === 'deal') { try { await dropDeal(id, col.dataset.col); } catch (err) { toast(err.message, 'bad'); } return; }
   const task = current?.data?.tasks?.find((t) => String(t.id) === id);
   const to = col.dataset.col;
   if (!task || task.status === to) return;
@@ -1480,7 +1500,8 @@ async function refreshAll() {
   if (!S.user) return;
   api('GET', '/api/me').then((d) => {
     if (!S.user) return;
-    const roleChanged = d.user.role !== S.user.role;
+    const roleChanged = d.user.role !== S.user.role || d.user.is_owner !== S.user.is_owner;
+    if (d.currency) S.currency = d.currency;
     S.user = d.user; S.unread = d.unread;
     if (roleChanged) { mountShell(); renderView(); } else updateBadges();
   }).catch(() => {});
@@ -1638,7 +1659,7 @@ async function boot() {
   if (S.token) {
     try {
       const d = await api('GET', '/api/me');
-      S.user = d.user; S.unread = d.unread;
+      S.user = d.user; S.unread = d.unread; S.currency = d.currency || 'INR';
       return startApp();
     } catch (err) {
       if (err.status === 0) {
@@ -1669,4 +1690,8 @@ window.addEventListener('beforeinstallprompt', (e) => {
 });
 window.addEventListener('appinstalled', () => { S.installEvt = null; $$('[data-install]').forEach((b) => b.classList.add('hidden')); toast('App installed ✓', 'ok'); });
 
+registerFinance({
+  S, VIEWS, ACT, SUBMIT, INPUT, CHANGE, $, $$, esc, ic, logo, avatar, empty, plural, linkify, api, toast, ask, go, paint,
+  scheduleRefresh, openModal, closeModalObj, modalOf, isMobile, cur: () => current,
+});
 boot();

@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "wrangler pages dev public --d1 DB --r2 FILES --compatibility-date=2025-01-01 --port 8788",
     "test:flow": "node tests/cloudflare-flow.mjs",
-    "test:runtime": "node tests/cloudflare-runtime.mjs"
+    "test:runtime": "node tests/cloudflare-runtime.mjs",
+    "test:finance": "node tests/finance-flow.mjs"
   },
   "engines": {
     "node": ">=22.13"

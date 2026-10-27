@@ -548,3 +548,26 @@ button.check:hover { border-color: var(--green); color: var(--green); background
 .feed-text { margin-top: 2px; overflow-wrap: anywhere; }
 .feed-task { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; border: 0; background: var(--surface-3); color: var(--text-2); font-size: 12px; font-weight: 600; border-radius: 6px; padding: 2px 8px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .feed-task:hover { background: var(--primary-soft); color: var(--primary-text); }
+
+/* ================================================================ finance (owners) */
+.fin-list { display: flex; flex-direction: column; gap: 8px; }
+.fin-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow-sm); cursor: pointer; transition: border-color .12s, box-shadow .12s; }
+.fin-row:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); }
+.fin-row .meta { margin-top: 2px; }
+.amt { text-align: right; flex: none; }
+.amt b { font-size: 15px; }
+.task.deal { align-items: center; }
+.board.deals { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.board.deals .col .task.deal { flex-direction: column; align-items: stretch; gap: 8px; }
+.board.deals .col .task-main { flex-basis: auto; }
+.board.deals .col .amt { display: flex; align-items: baseline; justify-content: space-between; text-align: left; border-top: 1px dashed var(--border); padding-top: 8px; }
+.board.deals .col .amt b { font-size: 14px; }
+.money-hero { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface-2); }
+.money-hero b { display: block; font-size: 28px; font-weight: 800; letter-spacing: -.02em; }
+.owner-toggle { align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--r); background: var(--amber-soft); font-size: 13.5px; margin-bottom: 8px; cursor: pointer; }
+.owner-toggle input { margin-top: 3px; width: 17px; height: 17px; accent-color: var(--primary); }
+@media (max-width: 560px) {
+  .fin-row { flex-wrap: wrap; }
+  .fin-row .grow { flex-basis: calc(100% - 44px); }
+  .fin-row .amt { margin-left: 40px; text-align: left; flex: 1; }
+}

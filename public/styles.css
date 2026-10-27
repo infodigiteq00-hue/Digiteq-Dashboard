@@ -571,3 +571,10 @@ button.check:hover { border-color: var(--green); color: var(--green); background
   .fin-row .grow { flex-basis: calc(100% - 44px); }
   .fin-row .amt { margin-left: 40px; text-align: left; flex: 1; }
 }
+
+/* ================================================================ password reset */
+.link-btn { border: 0; background: none; padding: 0; color: var(--primary-text); font-weight: 600; font-size: 13px; cursor: pointer; }
+.link-btn:hover { text-decoration: underline; }
+.field > span.row { display: flex; }
+.temp-pass { display: grid; gap: 12px; padding: 16px; border-radius: var(--r); background: var(--surface-2); border: 1px dashed var(--border-strong); }
+.temp-pass b { display: block; font-size: 20px; letter-spacing: .02em; user-select: all; }

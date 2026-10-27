@@ -6,7 +6,7 @@ import { FINANCE_SCHEMA, registerFinance } from './finance.js';
 const SCHEMA = `CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('superadmin','employee')),
-  is_owner INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+  is_owner INTEGER NOT NULL DEFAULT 0, email TEXT, must_change_password INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TEXT NOT NULL
@@ -63,6 +63,13 @@ CREATE TABLE IF NOT EXISTS task_updates (
 );
 CREATE INDEX IF NOT EXISTS task_updates_task ON task_updates(task_id, created_at);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+-- forgot-password: kind 'email' = one-time link token (stored hashed), kind 'request' = ask an admin to reset
+CREATE TABLE IF NOT EXISTS password_resets (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('email','request')), token_hash TEXT, created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL, used_at TEXT, handled_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS password_resets_user ON password_resets(user_id, created_at);
 `
   .concat(FINANCE_SCHEMA)
   .split(';')
@@ -70,15 +77,20 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
   .filter(Boolean);
 // Owners are super admins with finance access. Older databases get the column and their first super admin becomes owner.
 async function migrate(DB) {
-  const cols = (await DB.prepare('PRAGMA table_info(users)').all()).results;
-  if (cols.some((c) => c.name === 'is_owner')) return;
-  try {
-    await DB.batch([
-      DB.prepare('ALTER TABLE users ADD COLUMN is_owner INTEGER NOT NULL DEFAULT 0'),
-      DB.prepare("UPDATE users SET is_owner = 1 WHERE id = (SELECT MIN(id) FROM users WHERE role = 'superadmin')"),
-    ]);
-  } catch (err) {
-    if (!/duplicate column/i.test(String(err?.message))) throw err; // another isolate migrated first
+  const cols = (await DB.prepare('PRAGMA table_info(users)').all()).results.map((c) => c.name);
+  const steps = [];
+  if (!cols.includes('is_owner')) steps.push([
+    'ALTER TABLE users ADD COLUMN is_owner INTEGER NOT NULL DEFAULT 0',
+    "UPDATE users SET is_owner = 1 WHERE id = (SELECT MIN(id) FROM users WHERE role = 'superadmin')",
+  ]);
+  if (!cols.includes('email')) steps.push(['ALTER TABLE users ADD COLUMN email TEXT']);
+  if (!cols.includes('must_change_password')) steps.push(['ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0']);
+  for (const sqls of steps) {
+    try {
+      await DB.batch(sqls.map((sql) => DB.prepare(sql)));
+    } catch (err) {
+      if (!/duplicate column/i.test(String(err?.message))) throw err; // another isolate migrated first
+    }
   }
 }
 let schemaPromise;
@@ -112,7 +124,7 @@ async function derivePassword(pw, salt) {
     await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 50000 }, key, 256),
   );
 }
-async function hashPassword(pw) {
+export async function hashPassword(pw) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   return `pbkdf2$50000$${hex(salt)}$${hex(await derivePassword(pw, salt))}`;
 }
@@ -207,9 +219,16 @@ function createApi(context) {
     return token;
   }
   const publicUser = (u) =>
-    u && { id: u.id, name: u.name, username: u.username, role: u.role, is_owner: !!u.is_owner, created_at: u.created_at };
+    u && { id: u.id, name: u.name, username: u.username, role: u.role, is_owner: !!u.is_owner, email: u.email || '',
+      must_change_password: !!u.must_change_password, created_at: u.created_at };
 
   const isAdmin = (u) => u.role === 'superadmin';
+  async function cleanEmail(value, exceptId = 0) {
+    const email = str(value, 200).toLowerCase();
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, 'That email address doesn’t look right');
+    if (email && (await get('SELECT 1 FROM users WHERE lower(email) = ? AND id != ?', email, exceptId))) fail(400, 'Another account already uses that email');
+    return email || null;
+  }
   const isOwner = (u) => u.role === 'superadmin' && !!u.is_owner;
   const ownerIds = async () => (await all("SELECT id FROM users WHERE role = 'superadmin' AND is_owner = 1")).map((r) => r.id);
   const requireAdmin = (u) => {
@@ -448,6 +467,7 @@ function createApi(context) {
   route('GET', '/api/me', async ({ user }) => ({
     user: publicUser(user),
     currency: env.CURRENCY || 'INR',
+    email_reset: !!(env.RESEND_API_KEY && env.MAIL_FROM),
     unread: (await get('SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND is_read = 0', user.id))
       .n,
   }));
@@ -455,14 +475,117 @@ function createApi(context) {
     if (!(await checkPassword(String(body.current || ''), user.password_hash)))
       fail(400, 'Current password is wrong');
     if (String(body.password || '').length < 6) fail(400, 'New password must be at least 6 characters');
-    await run('UPDATE users SET password_hash = ? WHERE id = ?', await hashPassword(body.password), user.id);
+    if (String(body.password) === String(body.current)) fail(400, 'Choose a password different from the current one');
+    await run('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?', await hashPassword(body.password), user.id);
     await run('DELETE FROM sessions WHERE user_id = ? AND token != ?', user.id, token); // sign out other devices
     return { ok: true };
   });
 
+  // --- forgot password
+  // 1. With RESEND_API_KEY + MAIL_FROM set and an email on the account: a one-time reset link (valid 1 hour).
+  // 2. Otherwise: a reset request goes to the people allowed to reset that account (owners for owner accounts).
+  const sha256 = async (text) => hex(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))));
+  const emailEnabled = () => !!(env.RESEND_API_KEY && env.MAIL_FROM);
+  // Readable temporary password, e.g. "kite-4821-moon".
+  const WORDS = ['kite', 'moon', 'river', 'lamp', 'cloud', 'tiger', 'maple', 'stone', 'pearl', 'cedar', 'comet', 'delta', 'ember', 'falcon', 'grape', 'harbor'];
+  const tempPassword = () => {
+    const r = crypto.getRandomValues(new Uint32Array(3));
+    return `${WORDS[r[0] % WORDS.length]}-${1000 + (r[1] % 9000)}-${WORDS[r[2] % WORDS.length]}`;
+  };
+  async function canResetFor(target) {
+    return target.is_owner ? await ownerIds() : (await adminIds()).filter((id) => id !== target.id);
+  }
+  async function sendResetEmail(target, token, origin) {
+    const link = `${origin}/#/reset/${token}`;
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: env.MAIL_FROM, to: [target.email], subject: 'Reset your Digiteq password',
+        text: `Hi ${target.name},\n\nSomeone asked to reset the password for your Digiteq account (${target.username}).\nOpen this link within 1 hour to choose a new password:\n\n${link}\n\nIf it wasn't you, ignore this email. Your password stays the same.`,
+      }),
+    });
+    if (!res.ok) throw new Error(`Email service returned ${res.status}`);
+  }
+  route('POST', '/api/password/forgot', async ({ body, url }) => {
+    const who = str(body.username, 120);
+    if (!who) fail(400, 'Enter your username or email');
+    const target = await get("SELECT * FROM users WHERE username = ? OR (email IS NOT NULL AND email != '' AND lower(email) = lower(?))", who, who);
+    // Same answer whether or not the account exists, so this can't be used to discover usernames.
+    const answer = { ok: true, message: 'If that account exists, a reset link was emailed to it or your admin was asked to reset it.' };
+    if (!target) return answer;
+    const hourAgo = new Date(Date.now() - 3600000).toISOString();
+    const recent = (await get('SELECT COUNT(*) AS n FROM password_resets WHERE user_id = ? AND created_at >= ?', target.id, hourAgo)).n;
+    if (recent >= 3) return answer; // rate limit: 3 per account per hour
+    const t = now();
+    if (emailEnabled() && target.email) {
+      const token = hex(crypto.getRandomValues(new Uint8Array(32)));
+      await run("INSERT INTO password_resets (user_id, kind, token_hash, created_at, expires_at) VALUES (?, 'email', ?, ?, ?)",
+        target.id, await sha256(token), t, new Date(Date.now() + 3600000).toISOString());
+      try { await sendResetEmail(target, token, url.origin); } catch (err) { console.error('reset email failed', err); }
+      return answer;
+    }
+    await run("INSERT INTO password_resets (user_id, kind, created_at, expires_at) VALUES (?, 'request', ?, ?)",
+      target.id, t, new Date(Date.now() + 7 * 86400000).toISOString());
+    await notify(await canResetFor(target), {
+      type: 'reset_request', title: `🔑 ${target.name} forgot their password`,
+      body: `Open Team and set a temporary password for @${target.username}.`, url: '/#/team',
+    });
+    return answer;
+  }, { auth: false });
+  route('GET', '/api/password/reset/:token', async ({ params }) => {
+    const row = await get(`SELECT r.id, u.name, u.username FROM password_resets r JOIN users u ON u.id = r.user_id
+      WHERE r.kind = 'email' AND r.token_hash = ? AND r.used_at IS NULL AND r.expires_at > ?`, await sha256(params.token), now());
+    if (!row) fail(400, 'This reset link has expired or was already used. Ask for a new one.');
+    return { name: row.name, username: row.username };
+  }, { auth: false });
+  route('POST', '/api/password/reset', async ({ body }) => {
+    const password = String(body.password || '');
+    if (password.length < 6) fail(400, 'Password must be at least 6 characters');
+    const row = await get("SELECT * FROM password_resets WHERE kind = 'email' AND token_hash = ? AND used_at IS NULL AND expires_at > ?",
+      await sha256(String(body.token || '')), now());
+    if (!row) fail(400, 'This reset link has expired or was already used. Ask for a new one.');
+    const claimed = await run('UPDATE password_resets SET used_at = ? WHERE id = ? AND used_at IS NULL', now(), row.id);
+    if (!claimed.meta.changes) fail(400, 'This reset link was already used.');
+    await DB.batch([
+      stmt('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?', await hashPassword(password), row.user_id),
+      stmt('DELETE FROM sessions WHERE user_id = ?', row.user_id), // sign out every device
+      stmt('UPDATE password_resets SET used_at = COALESCE(used_at, ?) WHERE user_id = ?', now(), row.user_id),
+    ]);
+    const u = await get('SELECT * FROM users WHERE id = ?', row.user_id);
+    return { token: await newSession(u.id), user: publicUser(u) };
+  }, { auth: false });
+  route('GET', '/api/password/requests', async ({ user }) => {
+    requireAdmin(user);
+    const rows = await all(`SELECT r.id, r.created_at, u.id AS user_id, u.name, u.username, u.is_owner FROM password_resets r
+      JOIN users u ON u.id = r.user_id WHERE r.kind = 'request' AND r.used_at IS NULL AND r.expires_at > ? ORDER BY r.id DESC`, now());
+    const seen = new Set();
+    // One row per person; super admins only see requests for accounts they are allowed to reset.
+    return rows.filter((r) => (isOwner(user) || !r.is_owner) && r.user_id !== user.id && !seen.has(r.user_id) && seen.add(r.user_id));
+  });
+  route('POST', '/api/users/:id/temp-password', async ({ user, params }) => {
+    requireAdmin(user);
+    const target = (await get('SELECT * FROM users WHERE id = ?', Number(params.id))) || fail(404, 'User not found');
+    if (target.id === user.id) fail(400, 'Use Settings → Change password for your own account');
+    if (target.is_owner && !isOwner(user)) fail(403, 'Only an owner can reset an owner’s password');
+    const password = tempPassword();
+    await DB.batch([
+      stmt('UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?', await hashPassword(password), target.id),
+      stmt('DELETE FROM sessions WHERE user_id = ?', target.id),
+      stmt('UPDATE password_resets SET used_at = ?, handled_by = ? WHERE user_id = ? AND used_at IS NULL', now(), user.id, target.id),
+    ]);
+    await broadcast();
+    return { password, username: target.username };
+  });
+  route('POST', '/api/me/email', async ({ user, body }) => {
+    const email = await cleanEmail(body.email, user.id);
+    await run('UPDATE users SET email = ? WHERE id = ?', email, user.id);
+    return { ok: true, email: email || '' };
+  });
+
   // --- users / team
   route('GET', '/api/users', async ({ user }) => {
-    const rows = await all('SELECT id, name, username, role, is_owner, created_at FROM users ORDER BY role DESC, is_owner DESC, name');
+    const rows = await all('SELECT id, name, username, role, is_owner, email, created_at FROM users ORDER BY role DESC, is_owner DESC, name');
     if (!isAdmin(user)) return rows.map(({ id, name, role }) => ({ id, name, role }));
     for (const r of rows) r.is_owner = !!r.is_owner;
     const stats = await all(
@@ -493,12 +616,13 @@ function createApi(context) {
     const {
       meta: { last_row_id },
     } = await run(
-      'INSERT INTO users (name, username, password_hash, role, is_owner, created_at) VALUES (?,?,?,?,?,?)',
+      'INSERT INTO users (name, username, password_hash, role, is_owner, email, created_at) VALUES (?,?,?,?,?,?,?)',
       name,
       username,
       await hashPassword(password),
       role,
       owner,
+      await cleanEmail(body.email),
       now(),
     );
     await broadcast();
@@ -530,6 +654,7 @@ function createApi(context) {
       owner,
     );
     if (!changed.meta.changes) fail(400, 'You need at least one super admin');
+    if ('email' in body) await run('UPDATE users SET email = ? WHERE id = ?', await cleanEmail(body.email, target.id), target.id);
     if (body.password) {
       if (String(body.password).length < 6) fail(400, 'Password must be at least 6 characters');
       await run(

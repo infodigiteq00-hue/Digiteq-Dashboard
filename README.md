@@ -22,6 +22,21 @@ There is one codebase: the same app runs as a **website**, an installable **PC a
 
 Roles: **Owner** is a super admin who also sees **Finance**. **Super admin** has full control of clients, tasks and team, but no money screens. **Employee** sees their own tasks, can view clients, and keeps their own notes and self-added tasks. The account created at first-run setup is the first owner. Only an owner can make another super admin an owner (Team → edit → *Owner*), and there is always at least one owner.
 
+### Forgot password
+
+The sign-in screen has a **Forgot password?** link. What happens next depends on the account:
+
+- **Reset link by email**: works when the account has an email (set by an admin in Team, or by the person in Settings → *Recovery email*) **and** an email service is connected. Connect one by setting `RESEND_API_KEY` (from resend.com) and `MAIL_FROM` (for example `Digiteq <no-reply@yourdomain.com>`) in the Pages settings. The link works once and expires after 1 hour.
+- **Ask an admin** (the default): super admins get a 🔑 notification, plus a banner on the **Team** page. They press **Reset**, which creates a one-time temporary password like `kite-4821-moon`, and pass it on in person or by phone. Signing in with it forces the person to choose a new password first. Only owners can reset an owner's password.
+
+Either way, the person is signed out of every device. The screen gives the same answer whether or not the account exists, and each account gets at most 3 requests an hour.
+
+**Locked out with nobody to reset you** (for example, the only owner, with no email set): with Wrangler logged in to the Cloudflare account that has the database, run the command below. It prints a temporary password.
+
+```bash
+npm run reset-password -- <username> --db digiteq
+```
+
 ### Owner · Finance
 
 Only owners can see these screens: the server refuses finance requests from anyone else, and clients' money details are hidden from other roles.
@@ -55,6 +70,9 @@ TIMEZONE=Asia/Kolkata
 WORK_START=9
 WORK_END=20
 VAPID_SUBJECT=mailto:admin@digiteq.local
+# optional: email reset links (https://resend.com)
+# RESEND_API_KEY=re_...
+# MAIL_FROM=Digiteq <no-reply@yourdomain.com>
 CRON_SECRET=replace-with-a-random-local-secret
 CURRENCY=INR
 ```
@@ -67,7 +85,10 @@ To repeat the integration smoke test against a **disposable local workspace**, k
 npm run test:flow
 npm run test:runtime
 npm run test:finance
+npm run test:password
 ```
+
+These tests expect a **fresh local database**, where the test admin is the only super admin. To start clean, stop the dev server and delete `.wrangler/state/`.
 
 The flow test creates a local super admin (`smokeadmin` / `local-smoke-password`) on an empty database, then exercises employees, client logos, assignments, raw uploads, progress, digest/completion alerts, private notes, sync, downloads and permissions. It retains test fixtures for browser checks. On an existing local test database, set `TEST_ADMIN_USERNAME` and `TEST_ADMIN_PASSWORD` to its admin credentials. Never use these test credentials for a deployed workspace.
 
@@ -139,6 +160,7 @@ public/sw.js                service worker: install, offline shell, push notific
 public/manifest.webmanifest app name/icons for installing
 mobile/                     optional Capacitor wrapper for app-store builds
 tests/                      local API integration and Workers runtime checks
+scripts/reset-password.mjs  emergency password reset when nobody can sign in
 .wrangler/state/            local emulated database and files (not in git)
 ```
 

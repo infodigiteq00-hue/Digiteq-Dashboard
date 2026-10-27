@@ -138,6 +138,7 @@ const ICONS = {
   msg: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   pulse: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   spark: '<path d="M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z"/>',
+  key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/>',
   image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21"/>',
 };
 const ic = (name) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
@@ -671,24 +672,29 @@ VIEWS.updates = {
 let schedule = { start: 9, end: 20, next: new Date().toISOString() };
 
 VIEWS.team = {
-  admin: true, title: () => 'Team', sub: (users) => plural(users.length, 'person'),
+  admin: true, title: () => 'Team', sub: (d) => plural(d.users.length, 'person'),
   action: { label: 'Add employee', act: 'newUser' },
-  load: () => api('GET', '/api/users'),
-  html(users) {
-    return `<div class="card list">${users.map((x) => `
+  async load() { const [users, requests] = await Promise.all([api('GET', '/api/users'), api('GET', '/api/password/requests')]); return { users, requests }; },
+  html({ users, requests }) {
+    const canReset = (x) => x.id !== S.user.id && (!x.is_owner || isOwner());
+    return `${requests.length ? `<div class="banner" style="background:var(--amber-soft);border-color:transparent"><div class="ico" style="color:var(--amber)">${ic('key')}</div>
+        <div class="grow"><b>${plural(requests.length, 'person')} forgot ${requests.length > 1 ? 'their passwords' : 'their password'}</b>
+          <div class="chips" style="margin-top:8px">${requests.map((r) => `<button class="btn sm" data-act="tempPassword" data-id="${r.user_id}" data-name="${esc(r.name)}">${ic('key')} Reset for ${esc(r.name)}</button>`).join('')}</div></div></div>` : ''}
+      <div class="card list">${users.map((x) => `
         <div class="list-item">
           ${avatar(x)}
           <div class="grow"><div class="row" style="gap:8px"><b class="ellipsis">${esc(x.name)}</b>${x.role === 'superadmin' ? `<span class="chip ${x.is_owner ? 'amber' : 'indigo'}">${roleLabel(x)}</span>` : ''}${x.id === S.user.id ? '<span class="chip">You</span>' : ''}</div>
-            <div class="meta" style="margin-top:2px"><span>@${esc(x.username)}</span><span class="blue">${x.open} open</span>${x.overdue ? `<span class="red">${x.overdue} overdue</span>` : ''}<span class="green">${x.done} done</span></div></div>
+            <div class="meta" style="margin-top:2px"><span>@${esc(x.username)}</span>${x.email ? `<span>${ic('mail')}${esc(x.email)}</span>` : ''}<span class="blue">${x.open} open</span>${x.overdue ? `<span class="red">${x.overdue} overdue</span>` : ''}<span class="green">${x.done} done</span></div></div>
           <button class="btn sm hide-mobile" data-act="viewUserTasks" data-id="${x.id}">View tasks</button>
           <button class="icon-btn sm hide-desktop" data-act="viewUserTasks" data-id="${x.id}" aria-label="View tasks">${ic('tasks')}</button>
+          ${canReset(x) ? `<button class="icon-btn sm" data-act="tempPassword" data-id="${x.id}" data-name="${esc(x.name)}" aria-label="Reset password" title="Reset password">${ic('key')}</button>` : ''}
           <button class="icon-btn sm" data-act="editUser" data-id="${x.id}" aria-label="Edit">${ic('edit')}</button>
           ${x.id !== S.user.id ? `<button class="icon-btn sm" data-act="delUser" data-id="${x.id}" data-name="${esc(x.name)}" aria-label="Delete">${ic('trash')}</button>` : ''}
         </div>`).join('')}</div>`;
   },
 };
 
-const NOTIF_ICON = { completed: ['check', 'var(--green)', 'var(--green-soft)'], assigned: ['briefcase', 'var(--primary-text)', 'var(--primary-soft)'], self_added: ['plus', 'var(--blue)', 'var(--blue-soft)'], updated: ['edit', 'var(--amber)', 'var(--amber-soft)'], reopened: ['undo', 'var(--amber)', 'var(--amber-soft)'], digest: ['pulse', 'var(--blue)', 'var(--blue-soft)'], reminder: ['clock', 'var(--amber)', 'var(--amber-soft)'], payment: ['check', 'var(--green)', 'var(--green-soft)'], finance: ['inbox', 'var(--red)', 'var(--red-soft)'] };
+const NOTIF_ICON = { completed: ['check', 'var(--green)', 'var(--green-soft)'], assigned: ['briefcase', 'var(--primary-text)', 'var(--primary-soft)'], self_added: ['plus', 'var(--blue)', 'var(--blue-soft)'], updated: ['edit', 'var(--amber)', 'var(--amber-soft)'], reopened: ['undo', 'var(--amber)', 'var(--amber-soft)'], digest: ['pulse', 'var(--blue)', 'var(--blue-soft)'], reminder: ['clock', 'var(--amber)', 'var(--amber-soft)'], payment: ['check', 'var(--green)', 'var(--green-soft)'], finance: ['inbox', 'var(--red)', 'var(--red-soft)'], reset_request: ['key', 'var(--amber)', 'var(--amber-soft)'] };
 VIEWS.notifications = {
   title: () => 'Notifications', sub: (list) => `${list.filter((n) => !n.is_read).length} unread`,
   action: (list) => (list?.some((n) => !n.is_read) ? { label: 'Mark all read', act: 'readAll', plain: true } : null),
@@ -731,6 +737,9 @@ VIEWS.settings = {
     : perm === 'denied' ? 'Blocked. Allow notifications for this site in your browser or phone settings.'
       : perm === 'unsupported' ? 'Not supported here. On iPhone, install the app to the Home Screen first.' : 'Get alerts for new and finished tasks.',
   perm === 'default' ? '<button class="btn primary sm" data-act="enablePush">Turn on</button>' : perm === 'granted' ? '<button class="btn sm" data-act="testNotif">Send a test</button>' : '')}
+        <form class="card pad setting" data-submit="myEmail"><div class="mat-icon">${ic('mail')}</div><div class="grow"><b>Recovery email</b>
+          <div class="small muted" style="margin:2px 0 10px">${S.emailReset ? 'If you forget your password, a reset link goes here.' : 'Saved for password resets. Email links start working once your admin connects an email service — until then, “Forgot password” asks your admin.'}</div>
+          <div class="row"><input class="input" name="email" type="email" value="${esc(S.user.email || '')}" placeholder="you@company.com"><button class="btn sm">Save</button></div></div></form>
         <form class="card pad setting" data-submit="password"><div class="mat-icon">${ic('lock')}</div><div class="grow"><b>Change password</b>
           <div class="grid2" style="margin-top:10px"><label class="field" style="margin-bottom:10px"><span>Current</span><input class="input" type="password" name="current" autocomplete="current-password" required></label>
           <label class="field" style="margin-bottom:10px"><span>New</span><input class="input" type="password" name="password" autocomplete="new-password" minlength="6" required></label></div>
@@ -1135,6 +1144,7 @@ function openUserForm(u = null) {
       ${u ? '' : '<label class="field"><span>Username (for login) <span class="req">*</span></span><input class="input" name="username" required autocapitalize="none" autocomplete="off"></label>'}
       <label class="field"><span>${u ? 'New password (leave empty to keep)' : 'Password'} ${u ? '' : '<span class="req">*</span>'}</span>
         <input class="input" name="password" type="text" autocomplete="new-password" minlength="6" placeholder="At least 6 characters"></label>
+      <label class="field"><span>Email <span class="faint">(optional — for “Forgot password” links)</span></span><input class="input" name="email" type="email" autocomplete="off" value="${esc(u?.email || '')}"></label>
       <label class="field"><span>Role</span><select class="input" name="role">
         <option value="employee" ${u?.role !== 'superadmin' ? 'selected' : ''}>Employee — own tasks, notes, clients</option>
         <option value="superadmin" ${u?.role === 'superadmin' ? 'selected' : ''}>Super admin — full control</option></select></label>
@@ -1279,6 +1289,7 @@ const ACT = {
     else if (el.dataset.type === 'reminder') go('tasks');
     else if (el.dataset.type === 'payment' && isOwner()) go('receivables');
     else if (el.dataset.type === 'finance' && isOwner()) go('finance');
+    else if (el.dataset.type === 'reset_request' && isAdmin()) go('team');
   },
   async readAll() { await api('POST', '/api/notifications/read', {}); scheduleRefresh(); },
   enablePush: () => enablePush(),
@@ -1297,6 +1308,23 @@ const ACT = {
     if (current?.r.name === 'settings') paint();
   },
   logout: () => logout(),
+  forgotPassword: () => showForgot($('.auth-form [name=username]')?.value || ''),
+  backToLogin: () => { history.replaceState(null, '', '#/'); showAuth(false); },
+  async tempPassword(el) {
+    if (!(await ask(`Create a temporary password for ${el.dataset.name}? They’ll be signed out everywhere and must choose their own password at the next sign-in.`, { ok: 'Create temporary password', title: 'Reset password' }))) return;
+    const r = await api('POST', `/api/users/${el.dataset.id}/temp-password`);
+    openModal({
+      title: 'Temporary password',
+      body: `<p class="muted small" style="margin-bottom:12px">Give these to <b>${esc(el.dataset.name)}</b> in person, by phone or on WhatsApp. This password is shown only once.</p>
+        <div class="temp-pass"><div><span class="tiny muted">Username</span><b>${esc(r.username)}</b></div><div><span class="tiny muted">Temporary password</span><b class="num" data-temp>${esc(r.password)}</b></div></div>`,
+      foot: `<button type="button" class="btn" data-act="copyTemp" data-text="${esc(`Username: ${r.username}
+Temporary password: ${r.password}`)}">${ic('clip')} Copy</button><button type="button" class="btn primary" data-act="closeModal">Done</button>`,
+    });
+    scheduleRefresh();
+  },
+  async copyTemp(el) {
+    try { await navigator.clipboard.writeText(el.dataset.text); toast('Copied', 'ok'); } catch { toast('Couldn’t copy — select the text instead', 'bad'); }
+  },
 };
 
 const INPUT = {
@@ -1309,7 +1337,30 @@ const CHANGE = {
 
 // ------------------------------------------------------------------ form submits
 const SUBMIT = {
-  async login(f) { signIn(await api('POST', '/api/login', { username: f.username.value, password: f.password.value })); },
+  async login(f) {
+    const d = await api('POST', '/api/login', { username: f.username.value, password: f.password.value });
+    S.loginPassword = d.user.must_change_password ? f.password.value : null; // kept in memory only, for the forced change
+    signIn(d);
+  },
+  async forgot(f) { await api('POST', '/api/password/forgot', { username: f.username.value }); showForgotSent(); },
+  async resetPassword(f) {
+    if (f.password.value !== f.confirm.value) throw new Error('The two passwords don’t match');
+    const d = await api('POST', '/api/password/reset', { token: f.dataset.token, password: f.password.value });
+    history.replaceState(null, '', '#/');
+    toast('You’re signed in with your new password', 'ok', { title: 'Password changed' });
+    signIn(d);
+  },
+  async forceChange(f) {
+    if (f.password.value !== f.confirm.value) throw new Error('The two passwords don’t match');
+    await api('POST', '/api/me/password', { current: S.loginPassword || f.current.value, password: f.password.value });
+    S.loginPassword = null; S.user.must_change_password = false;
+    toast('Password saved', 'ok');
+    startApp();
+  },
+  async myEmail(f) {
+    const r = await api('POST', '/api/me/email', { email: f.email.value });
+    S.user.email = r.email; toast(r.email ? 'Recovery email saved' : 'Recovery email removed', 'ok');
+  },
   async setup(f) { signIn(await api('POST', '/api/setup', { name: f.name.value, username: f.username.value, password: f.password.value })); },
   async task(f, m) {
     const admin = isAdmin();
@@ -1371,7 +1422,7 @@ const SUBMIT = {
     toast('Deadline added', 'ok'); scheduleRefresh();
   },
   async user(f, m) {
-    const body = { name: f.name.value, password: f.password.value, role: f.role.value };
+    const body = { name: f.name.value, password: f.password.value, role: f.role.value, email: f.email.value };
     if (f.is_owner) body.is_owner = f.is_owner.checked && f.role.value === 'superadmin';
     if (m.data.user) await api('PATCH', `/api/users/${m.data.user.id}`, body);
     else await api('POST', '/api/users', { ...body, username: f.username.value });
@@ -1502,6 +1553,7 @@ async function refreshAll() {
     if (!S.user) return;
     const roleChanged = d.user.role !== S.user.role || d.user.is_owner !== S.user.is_owner;
     if (d.currency) S.currency = d.currency;
+    S.emailReset = !!d.email_reset;
     S.user = d.user; S.unread = d.unread;
     if (roleChanged) { mountShell(); renderView(); } else updateBadges();
   }).catch(() => {});
@@ -1605,7 +1657,7 @@ async function enablePush() {
 }
 
 // ------------------------------------------------------------------ auth & boot
-function showAuth(needsSetup) {
+function authShell(inner) {
   current = null;
   closeNotes(true);
   const perks = [['briefcase', 'Every client on one card — tasks, deadlines, files'], ['users', 'Assign work to one or many teammates'], ['bell', 'Instant alerts when work is finished'], ['note', 'Private notes that turn into tasks in one click']];
@@ -1616,16 +1668,69 @@ function showAuth(needsSetup) {
         <ul>${perks.map(([i, t]) => `<li><span class="ico">${ic(i)}</span>${t}</li>`).join('')}</ul></div>
       <div class="small" style="opacity:.6">© ${new Date().getFullYear()} Digiteq</div>
     </div>
-    <div class="auth-main"><form class="auth-form" data-submit="${needsSetup ? 'setup' : 'login'}">
-      <img class="logo-sm" src="/icons/icon-192.png" alt="">
-      <h1>${needsSetup ? 'Set up your workspace' : 'Welcome back'}</h1>
-      <p class="muted" style="margin-bottom:24px">${needsSetup ? 'Create the <b>super admin</b> account. You can add employees right after.' : 'Sign in with the username and password from your admin.'}</p>
+    <div class="auth-main">${inner}</div></div>`;
+  setTimeout(() => $('.auth-main input:not([type=hidden])')?.focus(), 50);
+}
+const authHead = (title, text) => `<img class="logo-sm" src="/icons/icon-192.png" alt=""><h1>${title}</h1><p class="muted" style="margin-bottom:24px">${text}</p>`;
+const formErr = '<div class="err" data-form-err style="min-height:20px;margin-bottom:8px"></div>';
+function showAuth(needsSetup) {
+  authShell(`<form class="auth-form" data-submit="${needsSetup ? 'setup' : 'login'}">
+      ${authHead(needsSetup ? 'Set up your workspace' : 'Welcome back', needsSetup ? 'Create the <b>owner</b> account. You can add your team right after.' : 'Sign in with the username and password from your admin.')}
       ${needsSetup ? '<label class="field"><span>Your name</span><input class="input" name="name" required autocomplete="name"></label>' : ''}
       <label class="field"><span>Username</span><input class="input" name="username" required autocapitalize="none" autocomplete="username"></label>
-      <label class="field"><span>Password</span><input class="input" name="password" type="password" required minlength="${needsSetup ? 6 : 1}" autocomplete="${needsSetup ? 'new-password' : 'current-password'}"></label>
-      <div class="err" data-form-err style="min-height:20px;margin-bottom:8px"></div>
+      <label class="field"><span class="row between">Password${needsSetup ? '' : '<button type="button" class="link-btn" data-act="forgotPassword">Forgot password?</button>'}</span>
+        <input class="input" name="password" type="password" required minlength="${needsSetup ? 6 : 1}" autocomplete="${needsSetup ? 'new-password' : 'current-password'}"></label>
+      ${formErr}
       <button class="btn primary block lg">${needsSetup ? 'Create account' : 'Sign in'} ${ic('arrow')}</button>
-    </form></div></div>`;
+    </form>`);
+}
+function showForgot(prefill = '') {
+  authShell(`<form class="auth-form" data-submit="forgot">
+      ${authHead('Forgot your password?', 'Enter your username (or the email on your account). We’ll send you a reset link, or ask your admin to reset it for you.')}
+      <label class="field"><span>Username or email</span><input class="input" name="username" required autocapitalize="none" autocomplete="username" value="${esc(prefill)}"></label>
+      ${formErr}
+      <button class="btn primary block lg">Reset my password ${ic('arrow')}</button>
+      <button type="button" class="btn ghost block" style="margin-top:10px" data-act="backToLogin">${ic('back')} Back to sign in</button>
+    </form>`);
+}
+function showForgotSent() {
+  authShell(`<div class="auth-form">
+      ${authHead('Help is on the way', 'If that account exists, one of these just happened:')}
+      <div class="card pad" style="display:grid;gap:14px">
+        <div class="row top"><div class="mat-icon">${ic('mail')}</div><div class="small"><b>A reset link was emailed</b><br>if your account has an email. It works for 1 hour.</div></div>
+        <div class="row top"><div class="mat-icon file">${ic('key')}</div><div class="small"><b>Your admin was notified</b><br>They’ll give you a temporary password. You’ll choose a new one when you sign in.</div></div>
+      </div>
+      <button type="button" class="btn primary block lg" style="margin-top:18px" data-act="backToLogin">Back to sign in</button>
+    </div>`);
+}
+async function showReset(token) {
+  let who;
+  try { who = await api('GET', `/api/password/reset/${encodeURIComponent(token)}`); } catch (err) {
+    authShell(`<div class="auth-form">${authHead('Link expired', esc(err.message))}
+      <button type="button" class="btn primary block lg" data-act="forgotPassword">Send a new link</button>
+      <button type="button" class="btn ghost block" style="margin-top:10px" data-act="backToLogin">Back to sign in</button></div>`);
+    return;
+  }
+  authShell(`<form class="auth-form" data-submit="resetPassword" data-token="${esc(token)}">
+      ${authHead('Choose a new password', `For <b>${esc(who.name)}</b> (@${esc(who.username)}). You’ll be signed out of every other device.`)}
+      <label class="field"><span>New password</span><input class="input" name="password" type="password" required minlength="6" autocomplete="new-password"></label>
+      <label class="field"><span>Repeat new password</span><input class="input" name="confirm" type="password" required minlength="6" autocomplete="new-password"></label>
+      ${formErr}
+      <button class="btn primary block lg">Save and sign in ${ic('arrow')}</button>
+    </form>`);
+}
+// After signing in with a temporary password the user must pick their own before using the app.
+function showForceChange() {
+  const known = !!S.loginPassword;
+  authShell(`<form class="auth-form" data-submit="forceChange">
+      ${authHead('Set your own password', `Hi ${esc(S.user.name.split(' ')[0])}, you signed in with a temporary password. Choose a new one to continue.`)}
+      ${known ? '' : '<label class="field"><span>Temporary password</span><input class="input" name="current" type="password" required autocomplete="current-password"></label>'}
+      <label class="field"><span>New password</span><input class="input" name="password" type="password" required minlength="6" autocomplete="new-password"></label>
+      <label class="field"><span>Repeat new password</span><input class="input" name="confirm" type="password" required minlength="6" autocomplete="new-password"></label>
+      ${formErr}
+      <button class="btn primary block lg">Save and continue ${ic('arrow')}</button>
+      <button type="button" class="btn ghost block" style="margin-top:10px" data-act="logout">Log out</button>
+    </form>`);
 }
 function signIn({ token, user }) {
   S.token = token; S.user = user;
@@ -1642,13 +1747,14 @@ async function logout(expired = false) {
     if (sub && token && !expired) await api('POST', '/api/push/unsubscribe', { endpoint: sub.endpoint });
   } catch { /* ignore */ }
   if (token && !expired) api('POST', '/api/logout').catch(() => {});
-  S.token = null; S.user = null; S.pushOn = false; S.notes.list = null;
+  S.token = null; S.user = null; S.pushOn = false; S.loginPassword = null; S.notes.list = null;
   store.set('dq_token', null);
   if (expired) toast('Your session ended. Please sign in again.', 'bad');
   history.replaceState(null, '', '#/');
   boot();
 }
 function startApp() {
+  if (S.user.must_change_password) { showForceChange(); return; }
   mountShell();
   if (!location.hash || location.hash === '#/') history.replaceState(null, '', `#/${defaultRoute()}`);
   renderView();
@@ -1656,10 +1762,12 @@ function startApp() {
   if ('Notification' in window && Notification.permission === 'granted') subscribePush().catch(() => {});
 }
 async function boot() {
+  const reset = location.hash.match(/^#\/reset\/([0-9a-f]{64})$/);
+  if (reset) { showReset(reset[1]); return; }
   if (S.token) {
     try {
       const d = await api('GET', '/api/me');
-      S.user = d.user; S.unread = d.unread; S.currency = d.currency || 'INR';
+      S.user = d.user; S.unread = d.unread; S.currency = d.currency || 'INR'; S.emailReset = !!d.email_reset;
       return startApp();
     } catch (err) {
       if (err.status === 0) {

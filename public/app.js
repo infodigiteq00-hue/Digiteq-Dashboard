@@ -1677,7 +1677,7 @@ function showAuth(needsSetup) {
   authShell(`<form class="auth-form" data-submit="${needsSetup ? 'setup' : 'login'}">
       ${authHead(needsSetup ? 'Set up your workspace' : 'Welcome back', needsSetup ? 'Create the <b>owner</b> account. You can add your team right after.' : 'Sign in with the username and password from your admin.')}
       ${needsSetup ? '<label class="field"><span>Your name</span><input class="input" name="name" required autocomplete="name"></label>' : ''}
-      <label class="field"><span>Username</span><input class="input" name="username" required autocapitalize="none" autocomplete="username"></label>
+      <label class="field"><span>${needsSetup ? 'Username' : 'Username or email'}</span><input class="input" name="username" required autocapitalize="none" autocomplete="username" ${needsSetup ? '' : 'placeholder="e.g. priya or priya@company.com"'}></label>
       <label class="field"><span class="row between">Password${needsSetup ? '' : '<button type="button" class="link-btn" data-act="forgotPassword">Forgot password?</button>'}</span>
         <input class="input" name="password" type="password" required minlength="${needsSetup ? 6 : 1}" autocomplete="${needsSetup ? 'new-password' : 'current-password'}"></label>
       ${formErr}

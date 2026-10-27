@@ -453,7 +453,9 @@ function createApi(context) {
     'POST',
     '/api/login',
     async ({ body }) => {
-      const u = await get('SELECT * FROM users WHERE username = ?', str(body.username, 50));
+      // Accept the username or the recovery email (both case-insensitive).
+      const who = str(body.username, 200);
+      const u = await get("SELECT * FROM users WHERE username = ? OR (email IS NOT NULL AND email != '' AND lower(email) = lower(?)) ORDER BY username = ? DESC LIMIT 1", who, who, who);
       if (!u || !(await checkPassword(String(body.password || ''), u.password_hash)))
         fail(401, 'Wrong username or password');
       return { token: await newSession(u.id), user: publicUser(u) };

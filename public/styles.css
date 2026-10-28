@@ -112,7 +112,7 @@ svg.i { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none;
 .me-card:hover, .me-card.active { background: var(--sidebar-hover); }
 .me-card b { color: #fff; font-size: 13.5px; }
 
-.main { display: flex; flex-direction: column; min-width: 0; height: 100%; position: relative; }
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; position: relative; }
 .topbar { display: flex; align-items: center; gap: 10px; min-height: 66px; padding: 12px 28px; padding-top: calc(12px + var(--safe-t)); border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 88%, transparent); backdrop-filter: saturate(1.4) blur(10px); z-index: 5; }
 .topbar .titles { flex: 1; min-width: 0; }
 .topbar h1 { font-size: 19px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -10,7 +10,8 @@
     "test:runtime": "node tests/cloudflare-runtime.mjs",
     "test:finance": "node tests/finance-flow.mjs",
     "test:password": "node tests/password-reset.mjs",
-    "reset-password": "node scripts/reset-password.mjs"
+    "reset-password": "node scripts/reset-password.mjs",
+    "test:bot": "node tests/whatsapp-bot.mjs"
   },
   "engines": {
     "node": ">=22.13"

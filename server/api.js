@@ -2,11 +2,12 @@
 import { generateVapid, sendPush } from './push.js';
 import { localParts, startOfToday, nextHour } from './time.js';
 import { FINANCE_SCHEMA, registerFinance } from './finance.js';
+import { BOT_SCHEMA, registerBot } from './bot.js';
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('superadmin','employee')),
-  is_owner INTEGER NOT NULL DEFAULT 0, email TEXT, must_change_password INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+  is_owner INTEGER NOT NULL DEFAULT 0, email TEXT, phone TEXT, must_change_password INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TEXT NOT NULL
@@ -72,6 +73,7 @@ CREATE TABLE IF NOT EXISTS password_resets (
 CREATE INDEX IF NOT EXISTS password_resets_user ON password_resets(user_id, created_at);
 `
   .concat(FINANCE_SCHEMA)
+  .concat(BOT_SCHEMA)
   .split(';')
   .map((sql) => sql.trim())
   .filter(Boolean);
@@ -85,6 +87,7 @@ async function migrate(DB) {
   ]);
   if (!cols.includes('email')) steps.push(['ALTER TABLE users ADD COLUMN email TEXT']);
   if (!cols.includes('must_change_password')) steps.push(['ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0']);
+  if (!cols.includes('phone')) steps.push(['ALTER TABLE users ADD COLUMN phone TEXT']);
   for (const sqls of steps) {
     try {
       await DB.batch(sqls.map((sql) => DB.prepare(sql)));
@@ -95,6 +98,7 @@ async function migrate(DB) {
 }
 let schemaPromise;
 let lastHourlyCheck = 0;
+let lastBotFlush = 0;
 async function ensureSchema(DB) {
   if (!schemaPromise) {
     schemaPromise = DB.batch(SCHEMA.map((sql) => DB.prepare(sql))).then(() => migrate(DB)).catch((err) => {
@@ -220,9 +224,18 @@ function createApi(context) {
   }
   const publicUser = (u) =>
     u && { id: u.id, name: u.name, username: u.username, role: u.role, is_owner: !!u.is_owner, email: u.email || '',
-      must_change_password: !!u.must_change_password, created_at: u.created_at };
+      phone: u.phone || '', must_change_password: !!u.must_change_password, created_at: u.created_at };
 
   const isAdmin = (u) => u.role === 'superadmin';
+  // WhatsApp number: digits with country code, e.g. 919876543210 (the bot matches on the last 10 digits).
+  async function cleanPhone(value, exceptId = 0) {
+    const phone = String(value ?? '').replace(/\D/g, '');
+    if (!phone) return null;
+    if (phone.length < 10 || phone.length > 15) fail(400, 'WhatsApp number should include the country code, e.g. 91 98765 43210');
+    const others = await all("SELECT id, phone FROM users WHERE phone IS NOT NULL AND phone != '' AND id != ?", exceptId);
+    if (others.some((o) => o.phone.slice(-10) === phone.slice(-10))) fail(400, 'Another account already uses that WhatsApp number');
+    return phone;
+  }
   async function cleanEmail(value, exceptId = 0) {
     const email = str(value, 200).toLowerCase();
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, 'That email address doesn’t look right');
@@ -579,6 +592,11 @@ function createApi(context) {
     await broadcast();
     return { password, username: target.username };
   });
+  route('POST', '/api/me/phone', async ({ user, body }) => {
+    const phone = await cleanPhone(body.phone, user.id);
+    await run('UPDATE users SET phone = ? WHERE id = ?', phone, user.id);
+    return { ok: true, phone: phone || '' };
+  });
   route('POST', '/api/me/email', async ({ user, body }) => {
     const email = await cleanEmail(body.email, user.id);
     await run('UPDATE users SET email = ? WHERE id = ?', email, user.id);
@@ -587,7 +605,7 @@ function createApi(context) {
 
   // --- users / team
   route('GET', '/api/users', async ({ user }) => {
-    const rows = await all('SELECT id, name, username, role, is_owner, email, created_at FROM users ORDER BY role DESC, is_owner DESC, name');
+    const rows = await all('SELECT id, name, username, role, is_owner, email, phone, created_at FROM users ORDER BY role DESC, is_owner DESC, name');
     if (!isAdmin(user)) return rows.map(({ id, name, role }) => ({ id, name, role }));
     for (const r of rows) r.is_owner = !!r.is_owner;
     const stats = await all(
@@ -618,13 +636,14 @@ function createApi(context) {
     const {
       meta: { last_row_id },
     } = await run(
-      'INSERT INTO users (name, username, password_hash, role, is_owner, email, created_at) VALUES (?,?,?,?,?,?,?)',
+      'INSERT INTO users (name, username, password_hash, role, is_owner, email, phone, created_at) VALUES (?,?,?,?,?,?,?,?)',
       name,
       username,
       await hashPassword(password),
       role,
       owner,
       await cleanEmail(body.email),
+      await cleanPhone(body.phone),
       now(),
     );
     await broadcast();
@@ -657,6 +676,7 @@ function createApi(context) {
     );
     if (!changed.meta.changes) fail(400, 'You need at least one super admin');
     if ('email' in body) await run('UPDATE users SET email = ? WHERE id = ?', await cleanEmail(body.email, target.id), target.id);
+    if ('phone' in body) await run('UPDATE users SET phone = ? WHERE id = ?', await cleanPhone(body.phone, target.id), target.id);
     if (body.password) {
       if (String(body.password).length < 6) fail(400, 'Password must be at least 6 characters');
       await run(
@@ -1380,6 +1400,16 @@ function createApi(context) {
     currency: env.CURRENCY || 'INR',
   });
 
+  // Lets the WhatsApp bot act as a real user through the normal routes (same permissions, notifications, validation).
+  async function internal(method, path, actor, body = {}) {
+    const url = new URL(`https://internal${path}`);
+    const r = routes.find((x) => x.method === method && x.re.test(url.pathname));
+    if (!r) fail(404, `No route ${method} ${path}`);
+    const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(url.pathname.match(r.re)[i + 1])]));
+    return r.handler({ request: null, url, params, body, user: actor, token: null });
+  }
+  const bot = registerBot({ route, all, get, run, DB, fail, files, str, now, env, isOwner, notify, internal, localParts, TIMEZONE });
+
   route('POST', '/api/upload', async ({ request }) => {
     const bucket = files();
     const max = 25 * 1024 * 1024;
@@ -1423,6 +1453,7 @@ function createApi(context) {
       if (!env.CRON_SECRET || request.headers.get('x-cron-key') !== env.CRON_SECRET)
         fail(403, 'Invalid cron secret');
       await runHourly();
+      await bot.flush();
       return { ok: true };
     },
     { auth: false },
@@ -1431,6 +1462,10 @@ function createApi(context) {
     if (Date.now() - lastHourlyCheck >= 60000) {
       lastHourlyCheck = Date.now();
       background(runHourly());
+    }
+    if (Date.now() - lastBotFlush >= 30000) {
+      lastBotFlush = Date.now();
+      background(bot.flush()); // backup for the n8n tick: grouped WhatsApp messages are processed while the app is open too
     }
     const n = url.searchParams.get('n');
     const results = await DB.batch([

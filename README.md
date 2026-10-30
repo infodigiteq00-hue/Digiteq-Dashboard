@@ -22,6 +22,16 @@ There is one codebase: the same app runs as a **website**, an installable **PC a
 
 Roles: **Owner** is a super admin who also sees **Finance**. **Super admin** has full control of clients, tasks and team, but no money screens. **Employee** sees their own tasks, can view clients, and keeps their own notes and self-added tasks. The account created at first-run setup is the first owner. Only an owner can make another super admin an owner (Team → edit → *Owner*), and there is always at least one owner.
 
+### WhatsApp bot
+
+Add the bot's number to your client WhatsApp groups:
+- **New tasks:** when a task is posted, owners are asked **privately** who should do it.
+- **Done:** when an employee says "done", they're asked **privately** to confirm. If it isn't on the dashboard yet, it's added to their tasks and marked done.
+- **Changes:** change requests go to the owners.
+- **Attachments:** photos, videos, documents, voice notes and links are saved to the task.
+
+It runs with WAHA and n8n (both on Railway). See **[docs/WHATSAPP_BOT.md](docs/WHATSAPP_BOT.md)** for setup, and the owner page **WhatsApp bot** for the groups to watch.
+
 ### Forgot password
 
 The sign-in screen has a **Forgot password?** link. What happens next depends on the account:
@@ -151,10 +161,15 @@ server/api.js               async API, D1 schema, permissions, digest/reminder j
 server/push.js              WebCrypto push encryption and VAPID
 server/time.js              scheduling in the configured time zone
 server/finance.js           owner-only finance API: commercials, invoices, payments, opportunities
+server/bot.js               WhatsApp bot: grouping, private questions, replies, attachments
+server/ai.js                message understanding: built-in rules, optional AI provider
+n8n/                        importable n8n workflow (WAHA → dashboard, 1-minute tick)
+docs/WHATSAPP_BOT.md        WhatsApp bot setup (WAHA, n8n, Cloudflare, AI)
 cron/                       scheduled Worker (every 15 minutes)
 public/index.html           app shell
 public/app.js               front-end, adaptive sync polling and direct uploads
 public/finance.js           owner Finance screens
+public/bot.js               owner WhatsApp bot settings page
 public/styles.css           styles (light + dark mode, phone + desktop)
 public/sw.js                service worker: install, offline shell, push notifications
 public/manifest.webmanifest app name/icons for installing

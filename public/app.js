@@ -1,5 +1,6 @@
 // Digiteq Dashboard front-end. Plain JS, no build step. Works as a website, an installed PC app and a phone app.
 import { registerFinance, clientFinanceTab, financeBanner, dropDeal } from './finance.js';
+import { registerBotUI } from './bot.js';
 
 // ------------------------------------------------------------------ state & storage
 const store = {
@@ -684,7 +685,7 @@ VIEWS.team = {
         <div class="list-item">
           ${avatar(x)}
           <div class="grow"><div class="row" style="gap:8px"><b class="ellipsis">${esc(x.name)}</b>${x.role === 'superadmin' ? `<span class="chip ${x.is_owner ? 'amber' : 'indigo'}">${roleLabel(x)}</span>` : ''}${x.id === S.user.id ? '<span class="chip">You</span>' : ''}</div>
-            <div class="meta" style="margin-top:2px"><span>@${esc(x.username)}</span>${x.email ? `<span>${ic('mail')}${esc(x.email)}</span>` : ''}<span class="blue">${x.open} open</span>${x.overdue ? `<span class="red">${x.overdue} overdue</span>` : ''}<span class="green">${x.done} done</span></div></div>
+            <div class="meta" style="margin-top:2px"><span>@${esc(x.username)}</span>${x.phone ? `<span>${ic('phone')}+${esc(x.phone)}</span>` : ''}${x.email ? `<span>${ic('mail')}${esc(x.email)}</span>` : ''}<span class="blue">${x.open} open</span>${x.overdue ? `<span class="red">${x.overdue} overdue</span>` : ''}<span class="green">${x.done} done</span></div></div>
           <button class="btn sm hide-mobile" data-act="viewUserTasks" data-id="${x.id}">View tasks</button>
           <button class="icon-btn sm hide-desktop" data-act="viewUserTasks" data-id="${x.id}" aria-label="View tasks">${ic('tasks')}</button>
           ${canReset(x) ? `<button class="icon-btn sm" data-act="tempPassword" data-id="${x.id}" data-name="${esc(x.name)}" aria-label="Reset password" title="Reset password">${ic('key')}</button>` : ''}
@@ -694,7 +695,7 @@ VIEWS.team = {
   },
 };
 
-const NOTIF_ICON = { completed: ['check', 'var(--green)', 'var(--green-soft)'], assigned: ['briefcase', 'var(--primary-text)', 'var(--primary-soft)'], self_added: ['plus', 'var(--blue)', 'var(--blue-soft)'], updated: ['edit', 'var(--amber)', 'var(--amber-soft)'], reopened: ['undo', 'var(--amber)', 'var(--amber-soft)'], digest: ['pulse', 'var(--blue)', 'var(--blue-soft)'], reminder: ['clock', 'var(--amber)', 'var(--amber-soft)'], payment: ['check', 'var(--green)', 'var(--green-soft)'], finance: ['inbox', 'var(--red)', 'var(--red-soft)'], reset_request: ['key', 'var(--amber)', 'var(--amber-soft)'] };
+const NOTIF_ICON = { completed: ['check', 'var(--green)', 'var(--green-soft)'], assigned: ['briefcase', 'var(--primary-text)', 'var(--primary-soft)'], self_added: ['plus', 'var(--blue)', 'var(--blue-soft)'], updated: ['edit', 'var(--amber)', 'var(--amber-soft)'], reopened: ['undo', 'var(--amber)', 'var(--amber-soft)'], digest: ['pulse', 'var(--blue)', 'var(--blue-soft)'], reminder: ['clock', 'var(--amber)', 'var(--amber-soft)'], payment: ['check', 'var(--green)', 'var(--green-soft)'], finance: ['inbox', 'var(--red)', 'var(--red-soft)'], reset_request: ['key', 'var(--amber)', 'var(--amber-soft)'], bot: ['msg', 'var(--green)', 'var(--green-soft)'] };
 VIEWS.notifications = {
   title: () => 'Notifications', sub: (list) => `${list.filter((n) => !n.is_read).length} unread`,
   action: (list) => (list?.some((n) => !n.is_read) ? { label: 'Mark all read', act: 'readAll', plain: true } : null),
@@ -737,6 +738,9 @@ VIEWS.settings = {
     : perm === 'denied' ? 'Blocked. Allow notifications for this site in your browser or phone settings.'
       : perm === 'unsupported' ? 'Not supported here. On iPhone, install the app to the Home Screen first.' : 'Get alerts for new and finished tasks.',
   perm === 'default' ? '<button class="btn primary sm" data-act="enablePush">Turn on</button>' : perm === 'granted' ? '<button class="btn sm" data-act="testNotif">Send a test</button>' : '')}
+        <form class="card pad setting" data-submit="myPhone"><div class="mat-icon">${ic('phone')}</div><div class="grow"><b>WhatsApp number</b>
+          <div class="small muted" style="margin:2px 0 10px">So the WhatsApp bot knows it’s you${isOwner() ? ' and can ask you who should do new tasks' : ' and can confirm your finished tasks'}. Include the country code.</div>
+          <div class="row"><input class="input" name="phone" type="tel" inputmode="tel" value="${esc(S.user.phone || '')}" placeholder="91 98765 43210"><button class="btn sm">Save</button></div></div></form>
         <form class="card pad setting" data-submit="myEmail"><div class="mat-icon">${ic('mail')}</div><div class="grow"><b>Recovery email</b>
           <div class="small muted" style="margin:2px 0 10px">${S.emailReset ? 'If you forget your password, a reset link goes here.' : 'Saved for password resets. Email links start working once your admin connects an email service — until then, “Forgot password” asks your admin.'}</div>
           <div class="row"><input class="input" name="email" type="email" value="${esc(S.user.email || '')}" placeholder="you@company.com"><button class="btn sm">Save</button></div></div></form>
@@ -746,6 +750,7 @@ VIEWS.settings = {
           <button class="btn sm">Update password</button></div></form>
       </div>
       ${isAdmin() ? `<div class="section hide-desktop"><button class="btn block lg" data-act="nav" data-to="team">${ic('users')} Manage team</button></div>` : ''}
+      ${isOwner() ? `<div class="section hide-desktop"><button class="btn block lg" data-act="nav" data-to="bot">${ic('msg')} WhatsApp bot</button></div>` : ''}
       <div class="section hide-desktop"><button class="btn danger block lg" data-act="logout">${ic('logout')} Log out</button></div>`;
   },
 };
@@ -841,7 +846,7 @@ function mountShell() {
     ? [['home', 'Overview', 'home'], ['clients', 'Clients', 'briefcase'], ['tasks', 'Tasks', 'tasks'], ['updates', 'Updates', 'pulse'], ['team', 'Team', 'users']]
     : [['tasks', 'My tasks', 'tasks'], ['clients', 'Clients', 'briefcase']];
   const owner = isOwner();
-  const money = [['finance', 'Overview', 'spark'], ['receivables', 'Receivables', 'inbox'], ['commercials', 'Commercials', 'file'], ['pipeline', 'Opportunities', 'arrow']];
+  const money = [['finance', 'Overview', 'spark'], ['receivables', 'Receivables', 'inbox'], ['commercials', 'Commercials', 'file'], ['pipeline', 'Opportunities', 'arrow'], ['bot', 'WhatsApp bot', 'msg']];
   const tabs = owner
     ? [['home', 'Home', 'home'], ['clients', 'Clients', 'briefcase'], ['notes', 'Notes', 'note'], ['tasks', 'Tasks', 'tasks'], ['finance', 'Money', 'inbox']]
     : admin
@@ -853,7 +858,7 @@ function mountShell() {
       <div class="brand"><img src="/icons/icon-192.png" alt=""><div><b>Digiteq</b><span>Company dashboard</span></div></div>
       <div class="nav-label">Workspace</div>
       ${main.map(navBtn).join('')}
-      ${owner ? `<div class="nav-label">Owner · Finance</div>${money.map(navBtn).join('')}` : ''}
+      ${owner ? `<div class="nav-label">Owner</div>${money.map(navBtn).join('')}` : ''}
       <div class="nav-label">Personal</div>
       <button class="nav-item" data-act="toggleNotes" data-notes-nav>${ic('note')}<span>My notes</span><span class="pill">Pop-up</span></button>
       <button class="nav-item" data-act="nav" data-to="notifications" data-nav="notifications">${ic('bell')}<span>Notifications</span><span class="count hidden" data-badge></span></button>
@@ -1144,6 +1149,7 @@ function openUserForm(u = null) {
       ${u ? '' : '<label class="field"><span>Username (for login) <span class="req">*</span></span><input class="input" name="username" required autocapitalize="none" autocomplete="off"></label>'}
       <label class="field"><span>${u ? 'New password (leave empty to keep)' : 'Password'} ${u ? '' : '<span class="req">*</span>'}</span>
         <input class="input" name="password" type="text" autocomplete="new-password" minlength="6" placeholder="At least 6 characters"></label>
+      <label class="field"><span>WhatsApp number <span class="faint">(with country code — the bot uses it)</span></span><input class="input" name="phone" type="tel" inputmode="tel" autocomplete="off" placeholder="91 98765 43210" value="${esc(u?.phone || '')}"></label>
       <label class="field"><span>Email <span class="faint">(optional — for “Forgot password” links)</span></span><input class="input" name="email" type="email" autocomplete="off" value="${esc(u?.email || '')}"></label>
       <label class="field"><span>Role</span><select class="input" name="role">
         <option value="employee" ${u?.role !== 'superadmin' ? 'selected' : ''}>Employee — own tasks, notes, clients</option>
@@ -1290,6 +1296,7 @@ const ACT = {
     else if (el.dataset.type === 'payment' && isOwner()) go('receivables');
     else if (el.dataset.type === 'finance' && isOwner()) go('finance');
     else if (el.dataset.type === 'reset_request' && isAdmin()) go('team');
+    else if (el.dataset.type === 'bot') go('settings');
   },
   async readAll() { await api('POST', '/api/notifications/read', {}); scheduleRefresh(); },
   enablePush: () => enablePush(),
@@ -1357,6 +1364,10 @@ const SUBMIT = {
     toast('Password saved', 'ok');
     startApp();
   },
+  async myPhone(f) {
+    const r = await api('POST', '/api/me/phone', { phone: f.phone.value });
+    S.user.phone = r.phone; toast(r.phone ? 'WhatsApp number saved' : 'WhatsApp number removed', 'ok');
+  },
   async myEmail(f) {
     const r = await api('POST', '/api/me/email', { email: f.email.value });
     S.user.email = r.email; toast(r.email ? 'Recovery email saved' : 'Recovery email removed', 'ok');
@@ -1422,7 +1433,7 @@ const SUBMIT = {
     toast('Deadline added', 'ok'); scheduleRefresh();
   },
   async user(f, m) {
-    const body = { name: f.name.value, password: f.password.value, role: f.role.value, email: f.email.value };
+    const body = { name: f.name.value, password: f.password.value, role: f.role.value, email: f.email.value, phone: f.phone.value };
     if (f.is_owner) body.is_owner = f.is_owner.checked && f.role.value === 'superadmin';
     if (m.data.user) await api('PATCH', `/api/users/${m.data.user.id}`, body);
     else await api('POST', '/api/users', { ...body, username: f.username.value });
@@ -1802,4 +1813,5 @@ registerFinance({
   S, VIEWS, ACT, SUBMIT, INPUT, CHANGE, $, $$, esc, ic, logo, avatar, empty, plural, linkify, api, toast, ask, go, paint,
   scheduleRefresh, openModal, closeModalObj, modalOf, isMobile, cur: () => current,
 });
+registerBotUI({ S, VIEWS, ACT, SUBMIT, api, toast, esc, ic, empty, plural, timeAgo, scheduleRefresh, cur: () => current });
 boot();

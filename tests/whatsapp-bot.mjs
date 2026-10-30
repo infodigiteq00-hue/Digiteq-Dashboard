@@ -23,6 +23,10 @@ const wahaServer = http.createServer((req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ subject: decodeURIComponent(req.url).includes(GROUP) ? 'Sunrise Team' : 'Some Other Group' }));
     }
+    if (req.url.includes('/messages/') && req.url.includes('downloadMedia=true')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ media: { url: 'http://localhost:3000/media/fetched.jpg', mimetype: 'image/jpeg' } }));
+    }
     if (req.url.startsWith('/media/')) { res.writeHead(200, { 'content-type': req.url.endsWith('.ogg') ? 'audio/ogg' : 'image/jpeg' }); return res.end(Buffer.from('fake-media-bytes')); }
     res.writeHead(404); res.end();
   });
@@ -36,8 +40,8 @@ const call = async (m, u, t, b, headers = {}) => {
   return [r.status, await r.json().catch(() => null)];
 };
 let msgSeq = 0;
-const wa = (from, body, extra = {}) => ({
-  event: 'message', session: 'default',
+const wa = (from, body, extra = {}, sessionName = 'default') => ({
+  event: 'message', session: sessionName,
   payload: { id: `false_${from}_${++msgSeq}`, timestamp: Date.now() / 1000, from, fromMe: false, body, hasMedia: false, ...extra },
 });
 const group = (sender, body, extra = {}) => wa(GROUP, body, { participant: `${sender}@c.us`, _data: { notifyName: extra.name || 'Neha (client)' }, ...extra });
@@ -154,6 +158,18 @@ try {
   await inbound(group(CLIENT, '', { hasMedia: true, media: { url: 'http://127.0.0.1:3990/media/note.ogg', mimetype: 'audio/ogg; codecs=opus' } }));
   await tick();
   ok(/New task #\d+/.test(lastTo(OWNER)) && /1 file/.test(lastTo(OWNER)), 'voice note becomes a task question with the audio attached');
+
+  // ---------------- 8b. media sent as an internal localhost link, and media with no link at all (downloadMedia fallback)
+  await inbound(group(CLIENT, 'Please print these flyers', { hasMedia: true, media: { url: 'http://localhost:3000/media/flyer.jpg', mimetype: 'image/jpeg' } }));
+  await inbound(group(CLIENT, '', { hasMedia: true }));
+  await tick();
+  ok(/2 files/.test(lastTo(OWNER)), 'localhost media link rewritten + link-less media fetched via downloadMedia');
+
+  // ---------------- 8c. events from another number (WAHA session) on the same server are ignored
+  const b1 = sent.length;
+  await inbound(wa(GROUP, 'please make a poster', { participant: `${CLIENT}@c.us` }, 'quotegen'));
+  await tick();
+  ok(sent.length === b1, 'messages for another WAHA session (e.g. Quotegen’s number) are ignored');
 
   // ---------------- 9. strangers can’t talk to the bot privately; unwatched groups ignored
   const b2 = sent.length;

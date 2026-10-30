@@ -46,6 +46,8 @@ export function registerBot(h) {
 
   // ---------------------------------------------------------------- WAHA client
   const wahaBase = () => String(env.WAHA_URL || '').replace(/\/$/, '');
+  // The bot's own WhatsApp number = its own WAHA session. Events from other sessions on the same WAHA
+  // (e.g. another bot using "default") are ignored, and replies always go out from this session.
   const session = () => env.WAHA_SESSION || 'default';
   const wahaFetch = (path, opts = {}) => fetch(path.startsWith('http') ? path : `${wahaBase()}${path}`, {
     ...opts, headers: { 'Content-Type': 'application/json', ...(env.WAHA_API_KEY ? { 'X-Api-Key': env.WAHA_API_KEY } : {}), ...(opts.headers || {}) },
@@ -101,10 +103,27 @@ export function registerBot(h) {
   const firstName = (n) => String(n || '').split(' ')[0];
 
   // ---------------------------------------------------------------- attachments → R2 materials
-  async function saveMedia(media) {
-    if (!media?.url || !env.FILES) return null;
+  // WAHA often reports media links as http://localhost:3000/... (its internal address): point them at the public WAHA_URL.
+  const publicMediaUrl = (u) => {
+    if (!u) return null;
+    if (!/^https?:\/\//.test(u)) return `${wahaBase()}${u.startsWith('/') ? '' : '/'}${u}`;
+    return wahaBase() ? u.replace(/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|waha)(:\d+)?/i, wahaBase()) : u;
+  };
+  // Media with no link in the webhook: ask WAHA for the message with downloadMedia=true.
+  async function mediaLink(media) {
+    if (media.url || !media.messageId || !wahaBase()) return media.url;
     try {
-      const url = media.url.startsWith('http') ? media.url : `${wahaBase()}${media.url}`;
+      const res = await wahaFetch(`/api/${session()}/chats/${encodeURIComponent(media.chatId)}/messages/${encodeURIComponent(media.messageId)}?downloadMedia=true`);
+      if (res.ok) { const j = await res.json(); return j.media?.url || null; }
+    } catch { /* not downloadable */ }
+    return null;
+  }
+  async function saveMedia(media) {
+    if (!media || !env.FILES) return null;
+    try {
+      const link = await mediaLink(media);
+      if (!link) return null;
+      const url = publicMediaUrl(link);
       const res = await fetch(url, { headers: env.WAHA_API_KEY ? { 'X-Api-Key': env.WAHA_API_KEY } : {} });
       if (!res.ok) return null;
       const key = `files/${crypto.randomUUID()}`;
@@ -433,13 +452,18 @@ export function registerBot(h) {
   function normalize(ev) {
     const e = ev?.body?.event ? ev.body : ev;
     if (!e || !['message', 'message.any'].includes(e.event)) return null;
+    if (e.session && e.session !== session()) return null; // another number on the same WAHA
     const p = e.payload || {};
     if (p.fromMe) return null;
     const from = String(p.from || '');
     const isGroup = from.endsWith('@g.us');
-    const media = p.hasMedia || p.media ? { url: p.media?.url || null, mimetype: p.media?.mimetype || p._data?.mimetype || '', filename: p.media?.filename || null } : null;
+    const id = String(p.id?._serialized || p.id || `${from}-${p.timestamp}`);
+    const media = p.hasMedia || p.media ? {
+      url: p.media?.url || null, mimetype: p.media?.mimetype || p._data?.mimetype || '', filename: p.media?.filename || null,
+      messageId: id, chatId: from,
+    } : null;
     return {
-      id: String(p.id?._serialized || p.id || `${from}-${p.timestamp}`), isGroup, chatId: from,
+      id, isGroup, chatId: from,
       sender: isGroup ? String(p.participant || p.author || p._data?.author || '') : from,
       senderName: p._data?.notifyName || p._data?.pushName || p.notifyName || p.pushName || '',
       text: String(p.body || p.caption || '').trim(), media,

@@ -45,9 +45,9 @@ You are setting up **Digiteq Dashboard** on this computer and putting it online.
 | `VAPID_SUBJECT` | `mailto:info@digiteqsolution.com` | text |
 | `CRON_SECRET` | generate a random string | **secret** |
 | `BOT_SECRET` | generate a random string (also goes in n8n) | **secret** |
-| `WAHA_URL` | `https://waha-production-74bf.up.railway.app`, or a second WAHA's URL (see step 7) | text |
+| `WAHA_URL` | `https://waha-production-d833.up.railway.app`, or a second WAHA's URL (see step 7) | text |
 | `WAHA_API_KEY` | the WAHA service's `WAHA_API_KEY`. **The user** copies it from Railway → WAHA → Variables and pastes it into Cloudflare | **secret** |
-| `WAHA_SESSION` | `digiteq` (the bot's own WhatsApp number; **not** `default`, which is Quotegen's number) | text |
+| `WAHA_SESSION` | `default` (the bot's session on its own WAHA) | text |
 | `RESEND_API_KEY`, `MAIL_FROM` | optional, for password-reset emails (resend.com) | secret / text |
 | `AI_PROVIDER`, `AI_API_KEY`, `AI_MODEL`, `AI_BASE_URL` | optional; the bot works without AI. The user will choose later | secret / text |
 
@@ -105,23 +105,12 @@ Workers & Pages → **D1 SQL Database** → Create → name **`digiteq`**. Don't
    - Edit `SITE_URL` in `cron/wrangler.toml` (don't commit secrets).
    - Run `cd cron && npx wrangler deploy && npx wrangler secret put CRON_SECRET`.
 
-## Step 7: WhatsApp bot on the existing WAHA (Railway, infodigiteq00@gmail.com)
-WAHA already runs at **https://waha-production-74bf.up.railway.app**. Its `default` session is **Quotegen's number. Don't touch, stop, log out or reconfigure it.** The bot uses a **different WhatsApp number** in its own session, **`digiteq`**.
-1. **Find the WAHA service.** The user logs in to Railway (infodigiteq00@gmail.com) in the browser, or runs `railway login` in the terminal. Confirm the account, then find the WAHA service.
-2. **Check the WAHA edition.** The user opens `<waha url>/dashboard` with the API key from Railway → WAHA → Variables, and tells you whether it says **Plus** or **Core**.
-   - **Plus:** continue here.
-   - **Core** (one number only, already used by Quotegen): stop and ask the user to choose between upgrading to WAHA Plus and adding a **second WAHA service** to the same Railway project for the bot.
-     - The second service uses the `devlikeapro/waha` image.
-     - Give it a volume at `/app/.sessions`.
-     - Set its variables: its own `WAHA_API_KEY` (generated), `WAHA_BASE_URL` = its public URL, and `WHATSAPP_DOWNLOAD_MEDIA=true`.
-     - Then use that URL as `WAHA_URL` in Cloudflare.
-3. **Create session `digiteq`** with a per-session webhook. Don't change WAHA's global webhook, which Quotegen may rely on. Use the WAHA dashboard, or `POST <waha>/api/sessions` with header `X-Api-Key` and this body:
-   ```json
-   { "name": "digiteq", "start": true, "config": { "webhooks": [ { "url": "<n8n url>/webhook/waha", "events": ["message"] } ] } }
-   ```
-   Get the n8n URL from step 8 first, or create the session now and update its webhook afterwards.
-4. **QR scan.** Show the QR code for session `digiteq`. **The user scans it with the bot's phone** (the new number: WhatsApp → Linked devices). Wait until the session status is **WORKING**.
-5. **Groups.** The user adds the bot's number to the client WhatsApp groups.
+## Step 7: WhatsApp bot on the existing WAHA (Railway project `handsome-serenity`, info.digiteq00@gmail.com)
+WAHA runs at **https://waha-production-d833.up.railway.app**. It is separate from Quotegen's WAHA and used only by this bot, so the bot uses session **`default`** with its own WhatsApp number. Don't touch Quotegen's WAHA (`waha-production-74bf`).
+1. The user logs in to Railway. Confirm the account, then open the project.
+2. In waha → Variables, add `WHATSAPP_HOOK_URL` = `<n8n url>/webhook/waha`, `WHATSAPP_HOOK_EVENTS` = `message`, `WAHA_BASE_URL` = the WAHA URL, and `WHATSAPP_DOWNLOAD_MEDIA` = `true`. Then deploy.
+3. **QR scan.** The user opens `<waha url>/dashboard`, starts session `default`, and **scans the QR code with the bot's phone** (WhatsApp → Linked devices). Wait for status **WORKING**.
+4. **Groups.** The user adds the bot's number to the client WhatsApp groups.
 
 ## Step 8: n8n (existing n8n on Railway, infodigiteq00@gmail.com)
 1. Find the n8n service's public URL in Railway. The user logs in to n8n.
@@ -129,7 +118,7 @@ WAHA already runs at **https://waha-production-74bf.up.railway.app**. Its `defau
 3. In both HTTP Request nodes, replace:
    - `https://REPLACE-WITH-YOUR-DASHBOARD.pages.dev` with the Pages URL;
    - `REPLACE-WITH-BOT_SECRET` with the `BOT_SECRET` value. Better: store it as an n8n credential (Header Auth, header name `x-bot-key`) and select it in both nodes.
-4. **Activate** the workflow. Its production webhook URL is `<n8n url>/webhook/waha`. Make sure the `digiteq` session's webhook in WAHA uses exactly this URL.
+4. **Activate** the workflow. Its production webhook URL is `<n8n url>/webhook/waha`. Make sure WAHA's `WHATSAPP_HOOK_URL` is exactly this URL.
 5. Don't modify or deactivate any existing Quotegen workflows.
 
 ## Step 9: Final checks and summary
@@ -142,7 +131,7 @@ WAHA already runs at **https://waha-production-74bf.up.railway.app**. Its `defau
 2. **Live test:**
    - Someone posts "Please design a test banner" in a watched group.
    - Within about 2 minutes it should appear on the **Designing** team board by itself, with no owner reply.
-   - If nothing happens, check in order: n8n executions, the WAHA `digiteq` session status and webhook, the Cloudflare variables (then redeploy), and that the group name matches.
+   - If nothing happens, check in order: n8n executions, the WAHA `default` session status and webhook, the Cloudflare variables (then redeploy), and that the group name matches.
 3. **Files:** upload a client logo and a task file. If you see a "Missing FILES binding" error, recheck R2 and redeploy.
 4. **Hourly job:** after the next quarter-hour, the cron Worker's log should show a successful run. A 403 means `CRON_SECRET` doesn't match.
 5. **Summary for the user** (no secret values):
@@ -150,6 +139,6 @@ WAHA already runs at **https://waha-production-74bf.up.railway.app**. Its `defau
    - **Cloudflare:** the Pages project name and URL, the D1 database name and ID, and the R2 bucket name.
    - **Settings:** the variable names that were set.
    - **Cron:** the cron Worker's name, schedule and `SITE_URL`.
-   - **WhatsApp:** the WAHA URL, the session name `digiteq` and its status, and the n8n workflow name and active state.
+   - **WhatsApp:** the WAHA URL, the session name `default` and its status, and the n8n workflow name and active state.
    - **Still to do:** billing, the AI provider, password-reset email, a custom domain.
    - **Reminder:** save `CRON_SECRET` and `BOT_SECRET` in a password manager.

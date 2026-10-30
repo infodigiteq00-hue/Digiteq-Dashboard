@@ -39,24 +39,22 @@ WhatsApp ──► WAHA (Railway) ──webhook──► n8n (Railway) ──►
 ```
 The bot's logic runs inside the dashboard, so it uses the same permissions, notifications and file storage as the app. n8n only forwards messages and runs the one-minute timer, so you can add your AI or other automations there later.
 
-## 1. WAHA on Railway (reuse the existing one)
-Digiteq already runs WAHA at **https://waha-production-74bf.up.railway.app**, in the Railway account of infodigiteq00@gmail.com. Quotegen uses its **`default`** session, which is Quotegen's number. The bot uses a **different WhatsApp number**, so it gets **its own session** on the same WAHA. Nothing changes for Quotegen: the bot ignores every event that isn't from its own session.
+## 1. WAHA on Railway (the existing Digiteq one)
+WAHA runs at **https://waha-production-d833.up.railway.app**, in Railway project `handsome-serenity` (account info.digiteq00@gmail.com). It's separate from Quotegen's WAHA and is used only by this bot, so the bot uses its **`default`** session with its own WhatsApp number. The image is `devlikeapro/waha`.
 
-1. **Check your WAHA edition.** In the WAHA dashboard (`<waha url>/dashboard`, using the API key from Railway → WAHA service → Variables), see whether it says *Plus* or *Core*.
-   - **WAHA Plus** can run several numbers. Continue with step 2.
-   - **WAHA Core** allows **one session only** (the one Quotegen already uses). Either upgrade to Plus, or add a second WAHA service in the same Railway project for the bot. That second WAHA uses its own volume and has its own URL, which then goes in `WAHA_URL`.
-2. **Create a session named `digiteq`** with its own webhook. Use the WAHA dashboard, or `POST /api/sessions` with the body below. A per-session webhook only sends the bot's messages to n8n, unlike the global `WHATSAPP_HOOK_URL`.
+1. In Railway → waha → **Variables**, add these, then deploy:
 
-```json
-{ "name": "digiteq", "start": true,
-  "config": { "webhooks": [ { "url": "https://<your n8n>/webhook/waha", "events": ["message"] } ] } }
-```
+| Variable | Value |
+|---|---|
+| `WHATSAPP_HOOK_URL` | `https://n8n-production-e061b.up.railway.app/webhook/waha` |
+| `WHATSAPP_HOOK_EVENTS` | `message` |
+| `WAHA_BASE_URL` | `https://waha-production-d833.up.railway.app` |
+| `WHATSAPP_DOWNLOAD_MEDIA` | `true` |
 
-3. **Scan the QR code** for session `digiteq` with the **bot's phone**, the new number (WhatsApp → Linked devices).
-4. **Add the bot's number** to the client WhatsApp groups.
-5. **Photo and file links:** WAHA's media links point at `http://localhost:3000/...`. The bot rewrites them to `WAHA_URL` automatically. When a message has media but no link, it fetches the media with `downloadMedia=true`. You don't have to do anything.
+2. Open `<waha url>/dashboard`, using the dashboard login from the same Variables page. Start session `default` and **scan the QR code with the bot's phone** (WhatsApp → Linked devices).
+3. **Add the bot's number** to the client WhatsApp groups.
 
-If you ever set WAHA up from scratch, also attach a volume at `/app/.sessions` so logins survive restarts.
+The bot ignores events from any other session. It rewrites `localhost:3000` media links to `WAHA_URL`, and fetches media that has no link with `downloadMedia=true`.
 
 ## 2. n8n on Railway (reuse your existing n8n)
 1. In your existing n8n, go to **Workflows → Import from file** and choose `n8n/digiteq-whatsapp-bot.json`. Its webhook path is `waha`, which doesn't clash with Quotegen's paths.
@@ -68,9 +66,9 @@ If you ever set WAHA up from scratch, also attach a volume at `/app/.sessions` s
 ## 3. Dashboard (Cloudflare Pages → Settings → Variables and Secrets)
 | Variable | Value |
 |---|---|
-| `WAHA_URL` | `https://waha-production-74bf.up.railway.app`, or your second WAHA's URL if you use one |
+| `WAHA_URL` | `https://waha-production-d833.up.railway.app`, or your second WAHA's URL if you use one |
 | `WAHA_API_KEY` | WAHA's API key, from Railway → WAHA → Variables (**secret**) |
-| `WAHA_SESSION` | **`digiteq`**, the bot's own session/number. Don't use `default`, which is Quotegen's number |
+| `WAHA_SESSION` | `default` (the bot's session on its own WAHA) |
 | `BOT_SECRET` | a long random string, the same one used in n8n (**secret**) |
 | `AI_PROVIDER`, `AI_API_KEY`, `AI_MODEL`, `AI_BASE_URL` | optional, see below |
 

@@ -65,7 +65,7 @@ try {
   ok(s === 400, 'duplicate WhatsApp number rejected');
   [s, d] = await call('POST', '/api/clients', O, { name: 'Sunrise Bakery' });
   const clientId = d.id;
-  [s] = await call('POST', '/api/bot/config', O, { enabled: true, buffer_seconds: 60, groups: [{ name: 'sunrise team', client_id: clientId }] });
+  [s] = await call('POST', '/api/bot/config', O, { enabled: true, mode: 'ask', buffer_seconds: 60, groups: [{ name: 'sunrise team', client_id: clientId }] });
   ok(s === 200, 'owner saves watched group (name match is case-insensitive)');
   [s] = await call('POST', '/api/bot/inbound', null, group(CLIENT, 'hi'), { 'x-bot-key': 'wrong' });
   ok(s === 403, 'wrong bot key refused');
@@ -177,6 +177,50 @@ try {
   await inbound(wa('120363000000000999@g.us', 'please do this', { participant: `${CLIENT}@c.us` }));
   await tick();
   ok(sent.length === b2, 'strangers’ DMs and unwatched groups are ignored');
+
+  // ---------------- 10. automatic mode (default): no owner reply needed; teams share the task
+  await tick();
+  [, d] = await call('GET', '/api/teams', O);
+  const design = d.find((x) => x.name === 'Designing'), coding = d.find((x) => x.name === 'Coding');
+  ok(d.length >= 3 && design && coding, 'starter teams exist');
+  [s] = await call('PATCH', `/api/teams/${design.id}`, O, { members: [priyaId] });
+  [s, d] = await call('POST', '/api/users', O, { name: 'Sneha Iyer', username: 'sneha', password: 'sneha-pass-1', phone: '919800000004' });
+  const snehaId = d.id;
+  await call('PATCH', `/api/teams/${coding.id}`, O, { members: [snehaId] });
+  [s, d] = await call('POST', '/api/bot/config', O, { enabled: true, groups: [{ name: 'sunrise team', client_id: clientId }] });
+  ok(d.mode === 'auto', 'automatic is the default mode');
+  const ownerMsgs = () => countTo(OWNER);
+  let o0 = ownerMsgs();
+  await inbound(group(CLIENT, 'Please design a new logo for the summer sale')); await tick();
+  [, tasks] = await call('GET', '/api/tasks', O);
+  let auto = tasks.find((x) => /summer sale/i.test(x.title));
+  ok(auto && auto.team_name === 'Designing' && auto.client_id === clientId, 'design task goes to Designing by itself');
+  ok(auto && auto.assignees.some((a) => a.id === priyaId) && /New task for Designing/.test(lastTo(PRIYA)), 'team member gets it and is told');
+  ok(ownerMsgs() === o0, 'owner not messaged');
+  await inbound(group(CLIENT, 'Please fix the bug on our website checkout')); await tick();
+  [, tasks] = await call('GET', '/api/tasks', O);
+  ok(tasks.find((x) => /checkout/i.test(x.title))?.team_name === 'Coding', 'website bug goes to Coding');
+  ok(ownerMsgs() === o0, 'owner still not messaged');
+  await inbound(group(CLIENT, 'Please change the summer sale logo colour to green instead')); await tick();
+  [, full] = await call('GET', `/api/tasks/${auto.id}`, O);
+  ok(/colour to green/.test(full.description) && ownerMsgs() === o0, 'change added automatically');
+  await inbound(group(CLIENT, 'Please arrange the things we discussed')); await tick();
+  ok(ownerMsgs() === o0 + 1 && /New task #\d+/.test(lastTo(OWNER)) && /Teams:/.test(lastTo(OWNER)), 'unclear task → owner asked, teams listed');
+  const unclear = lastTo(OWNER).match(/#(\d+)/)[1];
+  await inbound(wa(`${OWNER}@c.us`, `${unclear} coding`));
+  [, tasks] = await call('GET', '/api/tasks', O);
+  ok(tasks.find((x) => /arrange the things/i.test(x.title))?.team_name === 'Coding', 'owner can answer with a team name');
+  // shared board: new member joins open tasks, leaving removes them
+  await call('PATCH', `/api/teams/${design.id}`, O, { members: [priyaId, snehaId] });
+  [, full] = await call('GET', `/api/tasks/${auto.id}`, O);
+  ok(full.assignees.some((a) => a.id === snehaId), 'new team member joins the team’s open tasks');
+  await call('PATCH', `/api/teams/${design.id}`, O, { members: [priyaId] });
+  [, full] = await call('GET', `/api/tasks/${auto.id}`, O);
+  ok(!full.assignees.some((a) => a.id === snehaId), 'leaving the team removes them from open tasks');
+  [s] = await call('POST', '/api/tasks', O, { title: 'No team no person' });
+  ok(s === 400, 'task without team or person still refused');
+  [s, d] = await call('POST', '/api/tasks', O, { title: 'Dashboard team task', team_id: design.id });
+  ok(s === 200 && d.assignees.length === 1 && d.team_name === 'Designing', 'dashboard can assign to a team');
 
   const [, cfg] = await call('GET', '/api/bot/config', O);
   ok(cfg.recent.length >= 5 && cfg.status.waha && cfg.status.secret, 'bot page shows status and recent activity');

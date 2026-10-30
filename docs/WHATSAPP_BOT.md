@@ -1,6 +1,21 @@
 # WhatsApp bot — setup and how it works
 
-## What it does
+## Two modes
+Pick the mode on the **WhatsApp bot** page.
+
+- **Automatic (default):** owners don't need to reply.
+  - A task goes straight to the right **team**, chosen by each team's keywords (or by the AI, once connected), or to a person named in the message.
+  - The team sees it on its shared **Team boards** page and gets a WhatsApp message.
+  - Changes are added to the matching task by themselves.
+  - Owners are asked only when the bot isn't sure: unclear wording, no clear team, a tie between teams, or a team with no members.
+  - Every automatic action is listed under *Recent bot activity*.
+- **Ask owners:** the original flow described below, where owners are asked about every task and change. A copy of its n8n workflow is in `n8n/digiteq-whatsapp-bot.ask-owner-copy.json`, and git tag `whatsapp-ask-owner-v1` marks the code as it was.
+
+"Done" reports always ask the **employee** to confirm, in both modes.
+
+**Teams:** Designing, Coding and Marketing are created for you. Add members and edit keywords in **Team → Teams**. If someone joins or leaves a team, they join or leave its open tasks too. Until a team has members, the bot asks owners instead of assigning to it.
+
+## What it does (Ask owners mode)
 - **New task in a group.** When anyone (client, owner or employee) posts work in a watched group, the bot waits until they stop typing. It joins all their messages, photos, videos, documents, voice notes and links into one request, then **privately** asks every owner who has a WhatsApp number:
   > 🆕 *New task #12* in *Sunrise Team* (from Neha) … Reply *Priya* to assign · *12 Priya, Aman tomorrow* · *12 skip*
 

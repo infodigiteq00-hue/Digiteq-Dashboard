@@ -1,0 +1,128 @@
+{
+  "name": "Digiteq WhatsApp bot (ask-owner copy)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "waha-ask-owner",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "5b0b6b2c-6a41-4b55-9d8e-1a2f3c4d5e01",
+      "name": "WAHA events",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "digiteq-waha-ask-owner"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://REPLACE-WITH-YOUR-DASHBOARD.pages.dev/api/bot/inbound",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-bot-key",
+              "value": "REPLACE-WITH-BOT_SECRET"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "5b0b6b2c-6a41-4b55-9d8e-1a2f3c4d5e02",
+      "name": "Send to dashboard",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "5b0b6b2c-6a41-4b55-9d8e-1a2f3c4d5e03",
+      "name": "Every minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://REPLACE-WITH-YOUR-DASHBOARD.pages.dev/api/bot/tick",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-bot-key",
+              "value": "REPLACE-WITH-BOT_SECRET"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "5b0b6b2c-6a41-4b55-9d8e-1a2f3c4d5e04",
+      "name": "Process waiting messages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "WAHA events": {
+      "main": [
+        [
+          {
+            "node": "Send to dashboard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every minute": {
+      "main": [
+        [
+          {
+            "node": "Process waiting messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

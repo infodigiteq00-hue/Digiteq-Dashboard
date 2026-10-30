@@ -1,12 +1,14 @@
 // WhatsApp bot (via WAHA → n8n → this API).
 //  • Watches the WhatsApp groups named in Settings. Messages from the same person are grouped (they often type a task in
 //    several messages + photos/voice notes), then understood as: new task / "done" report / change request / chat.
+//  • Mode "auto" (default): tasks go straight to the right team or named person and changes are applied; owners are only
+//    asked when the bot isn't sure. Mode "ask" (the original flow): owners are asked about every task and change.
 //  • New task → the owners get a PRIVATE message: "who should do it?" → they reply with names (+ optional deadline) → task created.
 //  • "Done" from an employee → the employee gets a PRIVATE message: "mark <task> as done?" → YES → completed
 //    (if the task isn't on the dashboard yet, it is added to their tasks and marked done).
 //  • Change request → owners are asked privately to add it to the existing task (assignees are notified).
 //  • Links, images, videos, documents and voice notes are saved to the task.
-import { createAI, rankTasks, shortTitle } from './ai.js';
+import { createAI, guessTeam, overlap, rankTasks, shortTitle } from './ai.js';
 
 export const BOT_SCHEMA = `;
 CREATE TABLE IF NOT EXISTS bot_groups (
@@ -88,7 +90,7 @@ export function registerBot(h) {
   async function config() {
     const row = await get("SELECT value FROM meta WHERE key = 'bot_config'");
     const c = row ? JSON.parse(row.value) : {};
-    return { enabled: c.enabled !== false, buffer_seconds: Math.max(15, Math.min(600, Number(c.buffer_seconds) || 60)), groups: Array.isArray(c.groups) ? c.groups : [] };
+    return { enabled: c.enabled !== false, mode: c.mode === 'ask' ? 'ask' : 'auto', buffer_seconds: Math.max(15, Math.min(600, Number(c.buffer_seconds) || 60)), groups: Array.isArray(c.groups) ? c.groups : [] };
   }
   async function watched(groupId, name) {
     const c = await config();
@@ -241,6 +243,7 @@ export function registerBot(h) {
       });
       return;
     }
+    const teamNames = (await teamsList()).filter((t) => t.size > 0).map((t) => t.name).join(', ');
     const batch = crypto.randomUUID();
     for (const o of owners) {
       const id = await newItem({
@@ -253,7 +256,7 @@ export function registerBot(h) {
         `🆕 *New task #${id}* in *${group.name || 'WhatsApp group'}*${senderName ? ` (from ${senderName})` : ''}`,
         '', `*${title}*`, details && details !== title ? (details.length > 600 ? `${details.slice(0, 600)}…` : details) : null,
         attachLine(materials, missing) || null,
-        '', `👥 Team: ${assignable.map((u) => firstName(u.name)).join(', ') || '—'}`,
+        '', teamNames ? `🧩 Teams: ${teamNames}` : null, `👥 People: ${assignable.map((u) => firstName(u.name)).join(', ') || '—'}`,
         `Reply *${pending > 1 ? `${id} ` : ''}${example}* to assign (or *${id} ${example}, tomorrow*) · *${id} skip* to ignore.`,
       ));
     }
@@ -351,34 +354,46 @@ export function registerBot(h) {
       await send(o.ask_to, `ℹ️ #${o.id} was handled by ${byName}: ${summary}`);
     }
   }
+  const teamsList = () => all('SELECT t.*, (SELECT COUNT(*) FROM team_members m WHERE m.team_id = t.id) AS size FROM teams t ORDER BY t.name');
+  // "design", "designing team", "coding" … (team name or its first keyword)
+  function matchTeam(text, teams) {
+    const t = ` ${String(text || '').toLowerCase()} `;
+    return teams.find((x) => [x.name, String(x.keywords || '').split(',')[0]].some((v) => v && new RegExp(`\\s${v.trim().toLowerCase()}\\s`).test(t))) || null;
+  }
+  async function saveTask(owner, item, { users, teamObj, deadline }) {
+    const source = `\n\n— From WhatsApp group “${item.group_name || 'group'}”${item.sender_name ? `, sent by ${item.sender_name}` : ''}`;
+    const task = await internal('POST', '/api/tasks', owner, {
+      title: item.title || shortTitle(item.text), description: `${item.text || ''}${source}`.trim(), client_id: item.client_id,
+      deadline, priority: /urgent|asap|jaldi|immediately/i.test(item.text || '') ? 'urgent' : 'normal',
+      team_id: teamObj?.id || null, assignees: users.map((u) => u.id), materials: parse(item.materials, []),
+    });
+    await linkMessages(parse(item.message_ids, []), task.id);
+    // Tell the people doing it on WhatsApp too (the dashboard already notifies them in the app).
+    for (const a of task.assignees) {
+      const full = await get('SELECT phone FROM users WHERE id = ?', a.id);
+      if (full?.phone && a.id !== owner.id) {
+        await send(dm(full.phone), lines(`📌 *New task${teamObj ? ` for ${teamObj.name}` : ' for you'}*`, `*${task.title}*${task.client_name ? ` (${task.client_name})` : ''}`,
+          deadline ? `⏰ Due ${fmtDue(deadline)}` : null, attachLine(parse(item.materials, [])) || null, 'When it’s finished, just say “done” in the group or here.'));
+      }
+    }
+    return task;
+  }
   async function createAssignedTask(owner, item, rest) {
     const team = (await people()).filter((u) => u.role === 'employee' || u.role === 'superadmin');
     const { users, ambiguous } = matchNames(rest, team);
+    const teams = await teamsList();
+    const teamObj = matchTeam(rest, teams.filter((t) => t.size > 0));
     if (ambiguous.length) {
       await send(item.ask_to, `More than one person is called ${ambiguous.map((u) => firstName(u.name)).join(', ')}. Please use the full name, e.g. *${item.id} ${ambiguous[0].name}*.`);
       return null;
     }
-    if (!users.length) {
-      await send(item.ask_to, `Who should do *${item.title}*? Reply *${item.id} <name>* — team: ${team.map((u) => firstName(u.name)).join(', ')}. Or *${item.id} skip*.`);
+    if (!users.length && !teamObj) {
+      await send(item.ask_to, `Who should do *${item.title}*? Reply *${item.id} <name or team>* — teams: ${teams.filter((t) => t.size).map((t) => t.name).join(', ') || '—'}; people: ${team.map((u) => firstName(u.name)).join(', ')}. Or *${item.id} skip*.`);
       return null;
     }
     const deadline = parseDeadline(rest);
-    const source = `\n\n— From WhatsApp group “${item.group_name || 'group'}”${item.sender_name ? `, sent by ${item.sender_name}` : ''}`;
-    const task = await internal('POST', '/api/tasks', owner, {
-      title: item.title || shortTitle(item.text), description: `${item.text || ''}${source}`.trim(), client_id: item.client_id,
-      deadline, priority: /urgent|asap|jaldi|immediately/i.test(`${item.text} ${rest}`) ? 'urgent' : 'normal',
-      assignees: users.map((u) => u.id), materials: parse(item.materials, []),
-    });
-    await linkMessages(parse(item.message_ids, []), task.id);
-    // Tell the assignees on WhatsApp too (the dashboard already notifies them in the app).
-    for (const u of users) {
-      const full = await get('SELECT phone FROM users WHERE id = ?', u.id);
-      if (full?.phone && u.id !== owner.id) {
-        await send(dm(full.phone), lines(`📌 *New task for you* from ${firstName(owner.name)}`, `*${task.title}*${task.client_name ? ` (${task.client_name})` : ''}`,
-          deadline ? `⏰ Due ${fmtDue(deadline)}` : null, attachLine(parse(item.materials, [])) || null, 'When it’s finished, just say “done” in the group or here.'));
-      }
-    }
-    return { task, users, deadline };
+    const task = await saveTask(owner, item, { users, teamObj, deadline });
+    return { task, users, teamObj, deadline };
   }
   async function replyTask(person, waId, item, rest) {
     const owner = await ownerUser(person);
@@ -386,25 +401,14 @@ export function registerBot(h) {
     const made = await createAssignedTask(owner, item, rest);
     if (!made) return;
     await resolveItem(item.id, 'done', 'created', made.task.id);
-    const who = made.users.map((u) => firstName(u.name)).join(', ');
+    const who = [made.teamObj?.name, ...made.users.map((u) => firstName(u.name))].filter(Boolean).join(', ');
     await send(waId, `✅ Added *${made.task.title}* → ${who}${made.deadline ? `, due ${fmtDue(made.deadline)}` : ''}. They’ve been notified.`);
     await closeSiblings(item, firstName(owner.name), `assigned to ${who}`);
   }
-  async function replyChange(person, waId, item, rest) {
-    const owner = await ownerUser(person);
-    if (NO_RX.test(rest)) { await resolveItem(item.id, 'skipped'); await send(waId, `👍 Ignored change #${item.id}.`); await closeSiblings(item, firstName(owner.name), 'ignored'); return; }
-    if (/^new\b/i.test(rest)) {
-      const made = await createAssignedTask(owner, { ...item, title: shortTitle(item.text) }, rest.replace(/^new\b/i, ''));
-      if (!made) return;
-      await resolveItem(item.id, 'done', 'new task', made.task.id);
-      await send(waId, `✅ Made it a new task: *${made.task.title}* → ${made.users.map((u) => firstName(u.name)).join(', ')}.`);
-      await closeSiblings(item, firstName(owner.name), 'made a new task');
-      return;
-    }
-    if (!YES_RX.test(rest)) { await send(waId, `Reply *${item.id} yes* to add the change to *${item.title}*, *${item.id} new <name>* for a separate task, or *${item.id} no*.`); return; }
+  async function applyChange(owner, item) {
     let task;
     try { task = await internal('GET', `/api/tasks/${item.task_id}`, owner); } catch { task = null; }
-    if (!task) { await resolveItem(item.id, 'skipped', 'task gone'); await send(waId, 'That task no longer exists.'); return; }
+    if (!task) return null;
     const stamp = new Date().toLocaleString('en-IN', { timeZone: TIMEZONE, day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
     const note = `\n\n🔁 Change (${stamp}${item.sender_name ? `, from ${item.sender_name}` : ''}):\n${item.text}`;
     const updated = await internal('PATCH', `/api/tasks/${task.id}`, owner, {
@@ -416,6 +420,23 @@ export function registerBot(h) {
       const full = await get('SELECT phone FROM users WHERE id = ?', a.id);
       if (full?.phone && a.id !== owner.id) await send(dm(full.phone), `🔁 *Change for your task* “${updated.title}”:\n${item.text}${task.status === 'done' ? '\n(The task was reopened.)' : ''}`);
     }
+    return updated;
+  }
+  async function replyChange(person, waId, item, rest) {
+    const owner = await ownerUser(person);
+    if (NO_RX.test(rest)) { await resolveItem(item.id, 'skipped'); await send(waId, `👍 Ignored change #${item.id}.`); await closeSiblings(item, firstName(owner.name), 'ignored'); return; }
+    if (/^new\b/i.test(rest)) {
+      const made = await createAssignedTask(owner, { ...item, title: shortTitle(item.text) }, rest.replace(/^new\b/i, ''));
+      if (!made) return;
+      await resolveItem(item.id, 'done', 'new task', made.task.id);
+      await send(waId, `✅ Made it a new task: *${made.task.title}* → ${[made.teamObj?.name, ...made.users.map((u) => firstName(u.name))].filter(Boolean).join(', ')}.`);
+      await closeSiblings(item, firstName(owner.name), 'made a new task');
+      return;
+    }
+    if (!YES_RX.test(rest)) { await send(waId, `Reply *${item.id} yes* to add the change to *${item.title}*, *${item.id} new <name>* for a separate task, or *${item.id} no*.`); return; }
+    const updated = await applyChange(owner, item);
+    if (!updated) { await resolveItem(item.id, 'skipped', 'task gone'); await send(waId, 'That task no longer exists.'); return; }
+    const task = updated;
     await resolveItem(item.id, 'done', 'applied', task.id);
     await send(waId, `✅ Change added to *${updated.title}*${updated.assignees.length ? ` and ${updated.assignees.map((a) => firstName(a.name)).join(', ')} notified` : ''}.`);
     await closeSiblings(item, firstName(owner.name), 'change added');
@@ -536,13 +557,38 @@ export function registerBot(h) {
     let replyTaskId = null;
     for (const m of msgs) if (m.replyTo) { const r = await get('SELECT task_id FROM bot_task_messages WHERE message_id = ?', m.replyTo); if (r) replyTaskId = r.task_id; }
     const analysis = await ai.analyze({
-      text, hasMedia: mediaTypes.length > 0, mediaTypes, groupName: group.name, clientName, openTasks, recentTasks, myTasks,
+      text, hasMedia: mediaTypes.length > 0, mediaTypes, groupName: group.name, clientName, openTasks, recentTasks, myTasks, teams: await teamsList(),
       sender: { name: person?.name || buf.sender_name, isEmployee: !!person && !person.is_owner, isOwner: !!person?.is_owner },
     });
     const senderName = person?.name || buf.sender_name || `+${digits(buf.sender)}`;
     const messageIds = msgs.map((m) => m.id);
     if (analysis.kind === 'done' && person) {
       return askEmployeeAboutDone({ person, waId: dm(person.phone || buf.sender), text, title: analysis.title, materials, missing, messageIds, clientId, replyTaskId, aiTaskId: analysis.task_id });
+    }
+    if (c.mode === 'auto' && analysis.kind !== 'other' && !(analysis.kind === 'done' && person)) {
+      const owner = await get('SELECT * FROM users WHERE is_owner = 1 ORDER BY id LIMIT 1');
+      const base = { group_name: group.name, client_id: clientId, sender_name: senderName, text, materials: JSON.stringify(materials), message_ids: JSON.stringify(messageIds) };
+      const log = (kind, title, result, taskId) => newItem({ kind, status: 'done', ask_to: '', ask_user_id: owner.id, chat_id: group.id, group_name: group.name, client_id: clientId, sender: buf.sender, sender_name: senderName, title, text, result, task_id: taskId });
+      if (analysis.kind === 'change' || replyTaskId) {
+        const target = recentTasks.find((t) => t.id === (replyTaskId || analysis.task_id)) || (replyTaskId && (await openTasksFor({ recentDone: true })).find((t) => t.id === replyTaskId));
+        if (target && (replyTaskId || analysis.by === 'ai' || overlap(text, target.title) >= 2)) {
+          await applyChange(owner, { ...base, task_id: target.id });
+          await log('change', target.title, 'auto: change added', target.id);
+          return;
+        }
+      }
+      if (analysis.kind === 'task' && analysis.confident !== false) {
+        const staff = team.filter((u) => u.role === 'employee');
+        const named = matchNames(text, staff);
+        const teams = (await teamsList()).filter((t) => t.size > 0);
+        const teamObj = named.users.length || named.ambiguous.length ? null : teams.find((t) => t.name.toLowerCase() === String(analysis.team || '').toLowerCase()) || guessTeam(`${analysis.title || ''} ${text}`, teams);
+        if ((named.users.length && !named.ambiguous.length) || teamObj) {
+          const title = analysis.title || shortTitle(text);
+          const task = await saveTask(owner, { ...base, title, text: analysis.details || text }, { users: named.users, teamObj, deadline: parseDeadline(text) });
+          await log('task', title, `auto: ${teamObj?.name || named.users.map((u) => firstName(u.name)).join(', ')}`, task.id);
+          return;
+        }
+      }
     }
     if (analysis.kind === 'change' || (replyTaskId && analysis.kind === 'task')) {
       const task = recentTasks.find((t) => t.id === (replyTaskId || analysis.task_id))
@@ -588,7 +634,7 @@ export function registerBot(h) {
     const groups = (Array.isArray(body.groups) ? body.groups : []).map((g) => ({
       name: str(g.name, 120), id: str(g.id, 120) || undefined, client_id: g.client_id ? Number(g.client_id) : null,
     })).filter((g) => g.name || g.id).slice(0, 100);
-    const value = { enabled: body.enabled !== false, buffer_seconds: Math.max(15, Math.min(600, Number(body.buffer_seconds) || 60)), groups };
+    const value = { enabled: body.enabled !== false, mode: body.mode === 'ask' ? 'ask' : 'auto', buffer_seconds: Math.max(15, Math.min(600, Number(body.buffer_seconds) || 60)), groups };
     await run("INSERT INTO meta (key, value) VALUES ('bot_config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", JSON.stringify(value));
     return value;
   });

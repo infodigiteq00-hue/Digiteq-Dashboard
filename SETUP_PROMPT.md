@@ -136,11 +136,12 @@ WAHA already runs at **https://waha-production-74bf.up.railway.app**. Its `defau
 1. **In the dashboard**, the user (as Owner):
    - adds their **WhatsApp number** in Settings, and each employee's number in Team → edit;
    - opens **WhatsApp bot** (sidebar → Owner) and checks that WAHA, the bot key and file storage all show green;
+   - adds people to the **teams** (Team → Teams: Designing, Coding, Marketing). The bot can't send tasks to an empty team;
    - enters the **group names** exactly as they appear in WhatsApp and picks each group's client, then saves;
    - presses **Send me a test message**. A WhatsApp message should arrive from the bot's number.
 2. **Live test:**
    - Someone posts "Please design a test banner" in a watched group.
-   - Within about 2 minutes the owner should get a private 🆕 message. They reply with an employee's first name, and the task appears on the dashboard.
+   - Within about 2 minutes it should appear on the **Designing** team board by itself, with no owner reply.
    - If nothing happens, check in order: n8n executions, the WAHA `digiteq` session status and webhook, the Cloudflare variables (then redeploy), and that the group name matches.
 3. **Files:** upload a client logo and a task file. If you see a "Missing FILES binding" error, recheck R2 and redeploy.
 4. **Hourly job:** after the next quarter-hour, the cron Worker's log should show a successful run. A 403 means `CRON_SECRET` doesn't match.

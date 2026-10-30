@@ -25,6 +25,18 @@ export function shortTitle(text, max = 90) {
   return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
 }
 
+// Which team does this work belong to? Keywords from each team; a tie or no match means "not sure" (null).
+export function guessTeam(text, teams) {
+  const t = ` ${String(text || '').toLowerCase()} `;
+  const scored = teams.map((team) => ({
+    team,
+    score: String(team.keywords || '').split(',').map((k) => k.trim().toLowerCase()).filter(Boolean)
+      .filter((k) => new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(s|ing|ed)?\\b`).test(t)).length,
+  })).filter((x) => x.score > 0).sort((a, b) => b.score - a.score);
+  if (!scored.length || (scored[1] && scored[1].score === scored[0].score)) return null;
+  return scored[0].team;
+}
+
 // Best matching task for a piece of text (score = shared words; a reply-to link always wins).
 export function rankTasks(text, tasks) {
   return tasks.map((t) => ({ ...t, score: overlap(text, `${t.title} ${t.client_name || ''}`) }))
@@ -35,7 +47,7 @@ function heuristic({ text, hasMedia, sender, openTasks, recentTasks }) {
   const clean = String(text || '').trim();
   const done = DONE_RX.test(clean);
   if (sender?.isEmployee && done) return { kind: 'done', title: shortTitle(clean), details: clean };
-  if (!clean && hasMedia) return { kind: 'task', title: 'Files shared in the group', details: '' };
+  if (!clean && hasMedia) return { kind: 'task', title: 'Files shared in the group', details: '', confident: false };
   if (!clean || (CHATTER_RX.test(clean) && !hasMedia)) return { kind: 'other' };
   const changeable = recentTasks?.length ? recentTasks : openTasks;
   if (CHANGE_RX.test(clean) && changeable.length) {
@@ -45,7 +57,7 @@ function heuristic({ text, hasMedia, sender, openTasks, recentTasks }) {
   if (done && !sender?.isEmployee) return { kind: 'other' };
   if (TASK_RX.test(clean) || hasMedia || tokens(clean).length >= 6) {
     const lines = clean.split('\n').map((l) => l.trim()).filter(Boolean);
-    return { kind: 'task', title: shortTitle(clean), details: lines.length > 1 || clean.length > 90 ? clean : '' };
+    return { kind: 'task', title: shortTitle(clean), details: lines.length > 1 || clean.length > 90 ? clean : '', confident: TASK_RX.test(clean) };
   }
   return { kind: 'other' };
 }
@@ -82,7 +94,9 @@ export function createAI(env) {
 
   const SYSTEM = `You read WhatsApp messages from a digital agency's client groups and decide what they mean for the task dashboard.
 Messages may be English, Hindi or Hinglish, split across several lines, with attachments.
-Return ONLY a JSON object: {"kind": "task"|"done"|"change"|"other", "title": string, "details": string, "task_id": number|null}
+Return ONLY a JSON object: {"kind": "task"|"done"|"change"|"other", "title": string, "details": string, "task_id": number|null, "team": string|null, "confident": boolean}
+- "team": for "task", the one team from the given list that should do the work, or null if unclear.
+- "confident": false when you are unsure of the kind, the task or the team.
 - "task": someone asks for new work. title = short imperative summary (max 80 chars, same language as the request is fine). details = the full request, cleaned up, keep every requirement, link and date.
 - "done": an EMPLOYEE says some work is finished. title = what was finished. task_id = id from "their open tasks" if one clearly matches, else null.
 - "change": a change/correction/update to existing work. task_id = id from "open tasks for this client" that it changes (null if unclear). details = exactly what must change.
@@ -96,6 +110,7 @@ Never invent ids. Prefer "other" for messages like "ok", "thanks", "👍".`;
       const user = [
         `Group: ${input.groupName || '(direct message)'}${input.clientName ? ` (client: ${input.clientName})` : ''}`,
         `Sender: ${input.sender?.name || 'unknown'} — ${input.sender?.isEmployee ? 'EMPLOYEE of the agency' : input.sender?.isOwner ? 'agency owner' : 'client / outsider'}`,
+        input.teams?.length ? `Teams: ${input.teams.map((t) => t.name).join(', ')}` : '',
         `Attachments: ${input.mediaTypes?.length ? input.mediaTypes.join(', ') : 'none'}`,
         `Open tasks for this client: ${JSON.stringify((input.openTasks || []).slice(0, 25).map((t) => ({ id: t.id, title: t.title, assignees: t.assignees })))}`,
         input.recentTasks?.length ? `Recently finished tasks for this client (changes may refer to these too): ${JSON.stringify(input.recentTasks.filter((t) => t.status === 'done').slice(0, 15).map((t) => ({ id: t.id, title: t.title })))}` : '',
@@ -111,6 +126,7 @@ Never invent ids. Prefer "other" for messages like "ok", "thanks", "👍".`;
         title: String(json.title || base.title || '').slice(0, 120) || shortTitle(input.text),
         details: String(json.details || base.details || ''),
         task_id: known.has(Number(json.task_id)) ? Number(json.task_id) : base.task_id || null,
+        team: json.team || null, confident: json.confident !== false,
         by: 'ai',
       };
     } catch (err) {

@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   source TEXT NOT NULL DEFAULT 'admin' CHECK (source IN ('admin','self')),
   created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-  progress INTEGER, completed_at TEXT, completed_by INTEGER REFERENCES users(id) ON DELETE SET NULL, completion_note TEXT
+  progress INTEGER, team_id INTEGER REFERENCES teams(id) ON DELETE SET NULL, completed_at TEXT, completed_by INTEGER REFERENCES users(id) ON DELETE SET NULL, completion_note TEXT
 );
 CREATE TABLE IF NOT EXISTS task_assignees (
   task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -64,6 +64,14 @@ CREATE TABLE IF NOT EXISTS task_updates (
 );
 CREATE INDEX IF NOT EXISTS task_updates_task ON task_updates(task_id, created_at);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS teams (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, color TEXT, keywords TEXT, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS team_members (
+  team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  PRIMARY KEY (team_id, user_id)
+);
 -- forgot-password: kind 'email' = one-time link token (stored hashed), kind 'request' = ask an admin to reset
 CREATE TABLE IF NOT EXISTS password_resets (
   id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -78,6 +86,11 @@ CREATE INDEX IF NOT EXISTS password_resets_user ON password_resets(user_id, crea
   .map((sql) => sql.trim())
   .filter(Boolean);
 // Owners are super admins with finance access. Older databases get the column and their first super admin becomes owner.
+const DEFAULT_TEAMS = [
+  ['Designing', '#db2777', 'design, logo, banner, poster, creative, figma, thumbnail, flyer, brochure, mockup, illustration, graphic, reel, carousel, video edit, photoshop, canva, prototype'],
+  ['Coding', '#2563eb', 'code, coding, website, web, app, bug, api, deploy, landing page, wordpress, shopify, html, css, database, server, domain, hosting, script, developer'],
+  ['Marketing', '#d97706', 'marketing, ads, ad, campaign, seo, lead, newsletter, email, report, analytics, social media, promotion, hashtag, content calendar'],
+];
 async function migrate(DB) {
   const cols = (await DB.prepare('PRAGMA table_info(users)').all()).results.map((c) => c.name);
   const steps = [];
@@ -88,12 +101,19 @@ async function migrate(DB) {
   if (!cols.includes('email')) steps.push(['ALTER TABLE users ADD COLUMN email TEXT']);
   if (!cols.includes('must_change_password')) steps.push(['ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0']);
   if (!cols.includes('phone')) steps.push(['ALTER TABLE users ADD COLUMN phone TEXT']);
+  const taskCols = (await DB.prepare('PRAGMA table_info(tasks)').all()).results.map((c) => c.name);
+  if (!taskCols.includes('team_id')) steps.push(['ALTER TABLE tasks ADD COLUMN team_id INTEGER REFERENCES teams(id) ON DELETE SET NULL']);
   for (const sqls of steps) {
     try {
       await DB.batch(sqls.map((sql) => DB.prepare(sql)));
     } catch (err) {
       if (!/duplicate column/i.test(String(err?.message))) throw err; // another isolate migrated first
     }
+  }
+  // Starter teams, only once (so a team the owner deletes stays deleted).
+  const seeded = await DB.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('teams_seeded', '1')").run();
+  if (seeded.meta.changes) {
+    await DB.batch(DEFAULT_TEAMS.map(([name, color, keywords]) => DB.prepare('INSERT OR IGNORE INTO teams (name, color, keywords, created_at) VALUES (?,?,?,?)').bind(name, color, keywords, new Date().toISOString())));
   }
 }
 let schemaPromise;
@@ -347,8 +367,9 @@ function createApi(context) {
 
   // ---------------------------------------------------------------- tasks
   const TASK_SELECT = `
-  SELECT t.*, c.name AS client_name, c.color AS client_color, c.logo_key AS client_logo, cb.name AS created_by_name, db.name AS completed_by_name
-  FROM tasks t LEFT JOIN clients c ON c.id = t.client_id
+  SELECT t.*, c.name AS client_name, c.color AS client_color, c.logo_key AS client_logo, cb.name AS created_by_name, db.name AS completed_by_name,
+    tm.name AS team_name, tm.color AS team_color
+  FROM tasks t LEFT JOIN clients c ON c.id = t.client_id LEFT JOIN teams tm ON tm.id = t.team_id
   LEFT JOIN users cb ON cb.id = t.created_by LEFT JOIN users db ON db.id = t.completed_by`;
 
   async function decorate(tasks) {
@@ -406,6 +427,18 @@ function createApi(context) {
     );
     if (found.length !== list.length) fail(400, 'One of the selected employees no longer exists');
     return list;
+  }
+  // A team task is assigned to every member of the team, so it shows up for all of them (kept in sync by the team routes).
+  async function validTeam(id) {
+    if (id === null || id === undefined || id === '') return null;
+    if (!(await get('SELECT 1 FROM teams WHERE id = ?', Number(id)))) fail(400, 'Team not found');
+    return Number(id);
+  }
+  async function withTeam(teamId, ids) {
+    const members = teamId ? (await all('SELECT user_id FROM team_members WHERE team_id = ?', teamId)).map((r) => r.user_id) : [];
+    const list = [...members, ...(Array.isArray(ids) ? ids : [])];
+    if (teamId && !list.length) fail(400, 'That team has no members yet. Add people to it in Team, or pick someone.');
+    return validAssignees(list);
   }
   async function validClient(id) {
     if (id === null || id === undefined || id === '') return null;
@@ -493,6 +526,60 @@ function createApi(context) {
     if (String(body.password) === String(body.current)) fail(400, 'Choose a password different from the current one');
     await run('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?', await hashPassword(body.password), user.id);
     await run('DELETE FROM sessions WHERE user_id = ? AND token != ?', user.id, token); // sign out other devices
+    return { ok: true };
+  });
+
+  // --- teams (shared boards)
+  async function teamFields(body, existing = {}) {
+    const name = 'name' in body ? str(body.name, 60) : existing.name;
+    if (!name) fail(400, 'Give the team a name');
+    const clash = await get('SELECT id FROM teams WHERE name = ? AND id != ?', name, existing.id || 0);
+    if (clash) fail(400, 'A team with that name already exists');
+    return { name, color: 'color' in body ? str(body.color, 20) : existing.color || '#4f46e5', keywords: 'keywords' in body ? str(body.keywords, 1000) : existing.keywords || '' };
+  }
+  // Members join/leave all of the team's open tasks.
+  async function setMembers(teamId, ids) {
+    const next = [...new Set((Array.isArray(ids) ? ids : []).map(Number).filter(Boolean))];
+    if (next.length) await validAssignees(next);
+    const old = (await all('SELECT user_id FROM team_members WHERE team_id = ?', teamId)).map((r) => r.user_id);
+    const open = "SELECT id FROM tasks WHERE team_id = ? AND status != 'done'";
+    await batch([
+      ...old.filter((u) => !next.includes(u)).flatMap((u) => [
+        stmt('DELETE FROM team_members WHERE team_id = ? AND user_id = ?', teamId, u),
+        stmt(`DELETE FROM task_assignees WHERE user_id = ? AND task_id IN (${open})`, u, teamId),
+      ]),
+      ...next.filter((u) => !old.includes(u)).flatMap((u) => [
+        stmt('INSERT OR IGNORE INTO team_members (team_id, user_id) VALUES (?,?)', teamId, u),
+        stmt(`INSERT OR IGNORE INTO task_assignees (task_id, user_id) SELECT id, ? FROM tasks WHERE team_id = ? AND status != 'done'`, u, teamId),
+      ]),
+    ]);
+  }
+  route('GET', '/api/teams', async () => {
+    const teams = await all(`SELECT t.*, (SELECT COUNT(*) FROM tasks x WHERE x.team_id = t.id AND x.status != 'done') AS open_tasks FROM teams t ORDER BY t.name COLLATE NOCASE`);
+    const members = await all('SELECT m.team_id, u.id, u.name FROM team_members m JOIN users u ON u.id = m.user_id ORDER BY u.name');
+    return teams.map((t) => ({ ...t, members: members.filter((m) => m.team_id === t.id).map(({ id, name }) => ({ id, name })) }));
+  });
+  route('POST', '/api/teams', async ({ user, body }) => {
+    requireAdmin(user);
+    const f = await teamFields(body);
+    const r = await run('INSERT INTO teams (name, color, keywords, created_at) VALUES (?,?,?,?)', f.name, f.color, f.keywords, now());
+    await setMembers(r.meta.last_row_id, body.members);
+    await broadcast();
+    return { id: r.meta.last_row_id, ...f };
+  });
+  route('PATCH', '/api/teams/:id', async ({ user, body, params }) => {
+    requireAdmin(user);
+    const t = (await get('SELECT * FROM teams WHERE id = ?', Number(params.id))) || fail(404, 'Team not found');
+    const f = await teamFields(body, t);
+    await run('UPDATE teams SET name = ?, color = ?, keywords = ? WHERE id = ?', f.name, f.color, f.keywords, t.id);
+    if ('members' in body) await setMembers(t.id, body.members);
+    await broadcast();
+    return { id: t.id, ...f };
+  });
+  route('DELETE', '/api/teams/:id', async ({ user, params }) => {
+    requireAdmin(user);
+    await run('DELETE FROM teams WHERE id = ?', Number(params.id)); // tasks keep their assignees, the team label goes
+    await broadcast();
     return { ok: true };
   });
 
@@ -1017,7 +1104,8 @@ function createApi(context) {
     if (!title) fail(400, 'Task title is required');
     const admin = isAdmin(user);
     // Super admin MUST pick at least one employee. Employees can only add tasks to their own list.
-    const assignees = admin ? await validAssignees(body.assignees) : [user.id];
+    const teamId = admin ? await validTeam(body.team_id) : null;
+    const assignees = admin ? await withTeam(teamId, body.assignees) : [user.id];
     const priority = PRIORITIES.includes(body.priority) ? body.priority : 'normal';
     const t = now();
     const clientId = await validClient(body.client_id);
@@ -1025,8 +1113,9 @@ function createApi(context) {
     // D1 batches are atomic. MAX(id) refers to this batch's task insert, with no interleaving writes.
     const statements = [
       stmt(
-        `INSERT INTO tasks (client_id, title, description, deadline, priority, source, created_by, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO tasks (team_id, client_id, title, description, deadline, priority, source, created_by, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        teamId,
         clientId,
         title,
         str(body.description, 20000),
@@ -1085,13 +1174,15 @@ function createApi(context) {
       fail(403, 'Only the super admin can edit this task');
     const before = (await decorate([task]))[0].assignees.map((a) => a.id);
     // Updating a task as super admin always requires (re)confirming its assignees.
-    const assignees = admin ? await validAssignees(body.assignees ?? before) : before;
+    const teamId = admin && 'team_id' in body ? await validTeam(body.team_id) : task.team_id;
+    const assignees = admin ? await withTeam(teamId, body.assignees ?? before) : before;
     const title = 'title' in body ? str(body.title, 300) : task.title;
     if (!title) fail(400, 'Task title is required');
     const materials = await materialStatements('task', task.id, 'brief', body.materials || [], user.id);
     const statements = [
       stmt(
-        `UPDATE tasks SET title=?, description=?, deadline=?, priority=?, client_id=?, updated_at=? WHERE id=?`,
+        `UPDATE tasks SET team_id=?, title=?, description=?, deadline=?, priority=?, client_id=?, updated_at=? WHERE id=?`,
+        teamId,
         title,
         'description' in body ? str(body.description, 20000) : task.description,
         'deadline' in body ? optDate(body.deadline) : task.deadline,

@@ -578,3 +578,7 @@ button.check:hover { border-color: var(--green); color: var(--green); background
 .field > span.row { display: flex; }
 .temp-pass { display: grid; gap: 12px; padding: 16px; border-radius: var(--r); background: var(--surface-2); border: 1px dashed var(--border-strong); }
 .temp-pass b { display: block; font-size: 20px; letter-spacing: .02em; user-select: all; }
+
+/* ================================================================ teams */
+.team-tag { display: inline-flex; align-items: center; padding: 0 8px; line-height: 19px; border-radius: 6px; font-size: 11.5px; font-weight: 700; color: var(--c); background: color-mix(in srgb, var(--c) 14%, transparent); }
+.team-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--c); flex: none; }

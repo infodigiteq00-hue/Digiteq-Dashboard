@@ -22,7 +22,14 @@ There is one codebase: the same app runs as a **website**, an installable **PC a
 
 Roles: **Owner** is a super admin who also sees **Finance**. **Super admin** has full control of clients, tasks and team, but no money screens. **Employee** sees their own tasks, can view clients, and keeps their own notes and self-added tasks. The account created at first-run setup is the first owner. Only an owner can make another super admin an owner (Team → edit → *Owner*), and there is always at least one owner.
 
+### Teams
+
+Designing, Coding and Marketing come ready-made; manage them under **Team → Teams**. Assign a task to a team and everyone in it shares it on **Team boards**. People who join or leave a team join or leave its open tasks.
+
 ### WhatsApp bot
+
+By default the bot works automatically: tasks go to the right team without any owner reply, and owners are asked only when it isn't sure. The original flow, where owners are asked about everything, is still available as a mode. The list below describes that flow.
+
 
 Add the bot's number to your client WhatsApp groups:
 - **New tasks:** when a task is posted, owners are asked **privately** who should do it.

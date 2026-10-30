@@ -8,7 +8,7 @@ function html(d) {
   const ownersWithPhone = d.phones.filter((u) => u.is_owner && u.phone).length;
   const missing = d.phones.filter((u) => !u.phone);
   return `<div class="banner"><div class="ico">${A.ic('msg')}</div><div class="grow small">
-      Add the bot’s number to your WhatsApp groups and list the group names below. When someone posts a task, the bot <b>privately</b> asks the owners who should do it.
+      Add the bot’s number to your WhatsApp groups and list the group names below. ${d.mode === 'auto' ? 'Tasks go straight to the right team and changes are added automatically. Owners are only asked when the bot isn’t sure.' : 'When someone posts a task, the bot <b>privately</b> asks the owners who should do it.'}
       When an employee says it’s done, the bot <b>privately</b> asks them to confirm. Change requests go to the owners too. Files, photos, videos, voice notes and links are saved to the task.</div></div>
     <div class="settings-grid">
       <div class="card pad"><b>Connection</b><div style="display:grid;gap:8px;margin-top:12px">
@@ -34,13 +34,16 @@ function html(d) {
       <label class="field" style="max-width:340px"><span>Wait for more messages before asking</span><select class="input" name="buffer_seconds">
         ${[[30, '30 seconds'], [60, '1 minute'], [120, '2 minutes'], [300, '5 minutes']].map(([v, l]) => `<option value="${v}" ${d.buffer_seconds === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <span class="tiny muted" style="font-weight:400">People often type one task in several messages + photos. The bot waits until they stop typing.</span></label>
+      <label class="field" style="max-width:520px"><span>How tasks are handled</span><select class="input" name="mode">
+        <option value="auto" ${d.mode === 'auto' ? 'selected' : ''}>Automatic: send to the right team; ask owners only when unsure</option>
+        <option value="ask" ${d.mode === 'ask' ? 'selected' : ''}>Ask owners about every task and change</option></select></label>
       <button class="btn primary">Save</button>
     </form>
     <div class="section"><div class="section-head"><h2 class="grow">Recent bot activity</h2></div>
       ${d.recent.length ? `<div class="card list">${d.recent.map((r) => `<div class="list-item ${r.task_id ? 'click' : ''}" ${r.task_id ? `data-act="openTask" data-id="${r.task_id}"` : ''}>
         <div class="mat-icon">${KIND[r.kind][0]}</div>
         <div class="grow"><div class="strong ellipsis">${A.esc(r.title || '')}</div>
-          <div class="tiny muted">${KIND[r.kind][1]}${r.group_name ? ` · ${A.esc(r.group_name)}` : ''}${r.sender_name ? ` · ${A.esc(r.sender_name)}` : ''} · asked ${A.esc(r.asked || '')} · ${A.timeAgo(r.created_at)}</div></div>
+          <div class="tiny muted">${KIND[r.kind][1]}${r.group_name ? ` · ${A.esc(r.group_name)}` : ''}${r.sender_name ? ` · ${A.esc(r.sender_name)}` : ''} · ${String(r.result || '').startsWith('auto') ? A.esc(r.result) : `asked ${A.esc(r.asked || '')}`} · ${A.timeAgo(r.created_at)}</div></div>
         <span class="chip ${STATUS[r.status]?.[1] || ''}">${STATUS[r.status]?.[0] || A.esc(r.status)}</span></div>`).join('')}</div>`
     : `<div class="card">${A.empty('msg', 'Nothing yet', 'Once the bot is in a watched group, tasks and replies show up here.')}</div>`}</div>`;
 }
@@ -72,7 +75,7 @@ export function registerBotUI(app) {
     async botConfig(f) {
       const groups = [...f.querySelectorAll('[data-group-row]')].map((r) => ({ name: r.querySelector('[name=group_name]').value.trim(), client_id: r.querySelector('[name=group_client]').value || null }))
         .filter((g) => g.name);
-      await app.api('POST', '/api/bot/config', { enabled: f.enabled.checked, buffer_seconds: Number(f.buffer_seconds.value), groups });
+      await app.api('POST', '/api/bot/config', { enabled: f.enabled.checked, mode: f.mode.value, buffer_seconds: Number(f.buffer_seconds.value), groups });
       app.toast(`${A.plural(groups.length, 'group')} watched`, 'ok', { title: 'Bot settings saved' });
       app.scheduleRefresh();
     },

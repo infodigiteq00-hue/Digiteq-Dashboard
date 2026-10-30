@@ -361,6 +361,7 @@ function taskRow(t, { showClient = true, board = false } = {}) {
   const d = t.deadline && !done ? dueInfo(t.deadline) : null;
   const checkCls = done ? 'on' : t.status === 'in_progress' ? 'prog' : '';
   const meta = [
+    t.team_name ? `<span class="team-tag" style="--c:${esc(t.team_color || '#4f46e5')}">${esc(t.team_name)}</span>` : '',
     showClient && t.client_name ? `<span class="client">${logo(taskClient(t), 'xs')}${esc(t.client_name)}</span>` : '',
     !board && t.status === 'in_progress' ? '<span class="blue">● In progress</span>' : '',
     d ? `<span class="${d.cls}">${ic('clock')}${d.text}</span>` : '',
@@ -672,11 +673,53 @@ VIEWS.updates = {
 };
 let schedule = { start: 9, end: 20, next: new Date().toISOString() };
 
+VIEWS.boards = {
+  title: () => 'Team boards', sub: (d) => { const x = d.visible.find((v) => v.id === d.current); return x ? `${x.name}: ${plural(x.members.length, 'person')} sharing these tasks` : ''; },
+  action: (d) => (isAdmin() && d?.current ? { label: 'New task', act: 'newTeamTask' } : null),
+  async load() {
+    const [teams, tasks] = await Promise.all([api('GET', '/api/teams'), api('GET', `/api/tasks${isAdmin() ? '?limit=1000' : ''}`)]);
+    const visible = isAdmin() ? teams : teams.filter((x) => x.members.some((u) => u.id === S.user.id));
+    const current = visible.some((x) => x.id === S.ui.boardTeam) ? S.ui.boardTeam : visible[0]?.id || null;
+    return { teams, visible, current, allTasks: tasks };
+  },
+  html(d) {
+    d.current = d.visible.some((x) => x.id === S.ui.boardTeam) ? S.ui.boardTeam : d.visible[0]?.id || null;
+    if (!d.visible.length) return `<div class="card">${empty('board', 'You’re not in a team yet', isAdmin() ? 'Create teams on the Team page.' : 'Ask your admin to add you to a team.', isAdmin() ? '<button class="btn primary" data-act="nav" data-to="team">Open Team</button>' : '')}</div>`;
+    d.tasks = d.allTasks.filter((t) => t.team_id === d.current); // the drag & drop code reads data.tasks
+    const team = d.visible.find((x) => x.id === d.current);
+    const open = d.tasks.filter((t) => t.status !== 'done'), done = d.tasks.filter((t) => t.status === 'done');
+    return `<div class="tabs">${d.visible.map((x) => `<button class="${x.id === d.current ? 'on' : ''}" data-act="boardTeam" data-id="${x.id}">${esc(x.name)}<span class="n">${x.open_tasks}</span></button>`).join('')}</div>
+      <div class="row wrap" style="margin-bottom:14px"><div class="avatars">${team.members.slice(0, 8).map((u) => avatar(u, 'xs')).join('')}</div>
+        <span class="small muted">${esc(team.members.map((u) => firstName(u.name)).join(', ')) || 'No members yet'}</span></div>
+      ${!d.tasks.length ? `<div class="card">${empty('inbox', `No ${esc(team.name)} tasks yet`, 'Tasks for this team show up here for everyone in it.')}</div>`
+    : isMobile() ? `${open.length ? taskList(open) : ''}${done.length ? `<div class="sub-head">Done · ${done.length}</div>${taskList(done.slice(0, 30))}` : ''}` : taskBoard(d.tasks)}`;
+  },
+};
+const firstName = (n) => String(n || '').split(' ')[0];
+function teamsSection(teams) {
+  return `<div class="section"><div class="section-head"><h2 class="grow">Teams</h2><button class="btn sm" data-act="newTeam">${ic('plus')} New team</button></div>
+    ${teams.length ? `<div class="card list">${teams.map((x) => `<div class="list-item">
+      <span class="team-dot" style="--c:${esc(x.color || '#4f46e5')}"></span>
+      <div class="grow"><b>${esc(x.name)}</b><div class="small muted ellipsis">${x.members.length ? esc(x.members.map((u) => firstName(u.name)).join(', ')) : 'No members yet: its tasks can’t be assigned'} · ${plural(x.open_tasks, 'open task')}</div></div>
+      <button class="btn sm" data-act="editTeam" data-id="${x.id}">${ic('edit')} Edit</button></div>`).join('')}</div>` : `<div class="card">${empty('board', 'No teams', 'Add Designing, Coding, Marketing… to share tasks.')}</div>`}</div>`;
+}
+function openTeamForm(team, users) {
+  const members = new Set((team?.members || []).map((u) => u.id));
+  openModal({
+    title: team ? `Edit ${team.name}` : 'New team', form: 'team', sticky: true, data: { team, selected: members },
+    body: `<label class="field"><span>Team name <span class="req">*</span></span><input class="input" name="name" required value="${esc(team?.name || '')}" placeholder="e.g. Designing"></label>
+      <div class="field"><span>Members</span><div class="people">${users.map((u) => `<button type="button" class="person ${members.has(u.id) ? 'on' : ''}" data-act="togglePersonTeam" data-id="${u.id}">${avatar(u)}${esc(u.name)}</button>`).join('')}</div></div>
+      <label class="field"><span>WhatsApp bot keywords <span class="faint">(comma separated)</span></span><textarea class="input" name="keywords" placeholder="design, logo, banner, poster">${esc(team?.keywords || '')}</textarea>
+        <span class="tiny muted" style="font-weight:400">A WhatsApp message with these words goes to this team automatically.</span></label>`,
+    foot: `${team ? `<button type="button" class="btn ghost danger" data-act="delTeam" style="margin-right:auto">${ic('trash')} Delete</button>` : ''}<button type="button" class="btn" data-act="closeModal">Cancel</button><button class="btn primary lg">Save</button>`,
+  });
+}
+
 VIEWS.team = {
   admin: true, title: () => 'Team', sub: (d) => plural(d.users.length, 'person'),
   action: { label: 'Add employee', act: 'newUser' },
-  async load() { const [users, requests] = await Promise.all([api('GET', '/api/users'), api('GET', '/api/password/requests')]); return { users, requests }; },
-  html({ users, requests }) {
+  async load() { const [users, requests, teams] = await Promise.all([api('GET', '/api/users'), api('GET', '/api/password/requests'), api('GET', '/api/teams')]); return { users, requests, teams }; },
+  html({ users, requests, teams }) {
     const canReset = (x) => x.id !== S.user.id && (!x.is_owner || isOwner());
     return `${requests.length ? `<div class="banner" style="background:var(--amber-soft);border-color:transparent"><div class="ico" style="color:var(--amber)">${ic('key')}</div>
         <div class="grow"><b>${plural(requests.length, 'person')} forgot ${requests.length > 1 ? 'their passwords' : 'their password'}</b>
@@ -691,7 +734,7 @@ VIEWS.team = {
           ${canReset(x) ? `<button class="icon-btn sm" data-act="tempPassword" data-id="${x.id}" data-name="${esc(x.name)}" aria-label="Reset password" title="Reset password">${ic('key')}</button>` : ''}
           <button class="icon-btn sm" data-act="editUser" data-id="${x.id}" aria-label="Edit">${ic('edit')}</button>
           ${x.id !== S.user.id ? `<button class="icon-btn sm" data-act="delUser" data-id="${x.id}" data-name="${esc(x.name)}" aria-label="Delete">${ic('trash')}</button>` : ''}
-        </div>`).join('')}</div>`;
+        </div>`).join('')}</div>${teamsSection(teams)}`;
   },
 };
 
@@ -843,8 +886,8 @@ function updateBadges() {
 function mountShell() {
   const admin = isAdmin();
   const main = admin
-    ? [['home', 'Overview', 'home'], ['clients', 'Clients', 'briefcase'], ['tasks', 'Tasks', 'tasks'], ['updates', 'Updates', 'pulse'], ['team', 'Team', 'users']]
-    : [['tasks', 'My tasks', 'tasks'], ['clients', 'Clients', 'briefcase']];
+    ? [['home', 'Overview', 'home'], ['clients', 'Clients', 'briefcase'], ['tasks', 'Tasks', 'tasks'], ['boards', 'Team boards', 'board'], ['updates', 'Updates', 'pulse'], ['team', 'Team', 'users']]
+    : [['tasks', 'My tasks', 'tasks'], ['boards', 'Team boards', 'board'], ['clients', 'Clients', 'briefcase']];
   const owner = isOwner();
   const money = [['finance', 'Overview', 'spark'], ['receivables', 'Receivables', 'inbox'], ['commercials', 'Commercials', 'file'], ['pipeline', 'Opportunities', 'arrow'], ['bot', 'WhatsApp bot', 'msg']];
   const tabs = owner
@@ -1010,6 +1053,7 @@ function taskSheetHtml(t) {
     <dl class="props">
       ${t.client_name ? `<dt>${ic('briefcase')}Client</dt><dd><button type="button" class="chip click" data-act="nav" data-to="clients/${t.client_id}">${logo(taskClient(t), 'xs')}${esc(t.client_name)}</button></dd>` : ''}
       <dt>${ic('calendar')}Deadline</dt><dd>${t.deadline ? `${fmtFull(t.deadline)} ${t.status !== 'done' ? `<span class="chip ${d.cls}">${isOverdue(t) ? 'Overdue' : timeLeft(t.deadline)}</span>` : ''}` : '<span class="muted">No deadline</span>'}</dd>
+      ${t.team_name ? `<dt>${ic('board')}Team</dt><dd><span class="team-tag" style="--c:${esc(t.team_color || '#4f46e5')}">${esc(t.team_name)}</span></dd>` : ''}
       <dt>${ic('users')}Assigned to</dt><dd>${t.assignees.map((a) => `<span class="chip" style="padding-left:3px">${avatar(a, 'xxs')}${esc(a.name)}</span>`).join('') || '—'}</dd>
       <dt>${ic('user')}Created by</dt><dd>${esc(t.created_by_name || '—')} <span class="muted">· ${fmtShort(t.created_at)}</span></dd>
     </dl>
@@ -1079,7 +1123,7 @@ function openCompleteForm(task) {
 // Create / edit task. A super admin must assign at least one employee.
 async function openTaskForm({ task = null, prefill = {} } = {}) {
   const admin = isAdmin();
-  const [users, clients] = await Promise.all([admin ? api('GET', '/api/users') : [], api('GET', '/api/clients')]);
+  const [users, clients, teams] = await Promise.all([admin ? api('GET', '/api/users') : [], api('GET', '/api/clients'), admin ? api('GET', '/api/teams') : []]);
   const t = task || prefill;
   const selected = new Set(task ? task.assignees.map((a) => a.id) : (prefill.assignees || []));
   const title = task ? 'Edit task' : admin ? 'New task' : 'Add a task to my list';
@@ -1087,7 +1131,7 @@ async function openTaskForm({ task = null, prefill = {} } = {}) {
   const people = [...users].sort((a, b) => (a.role === b.role ? a.name.localeCompare(b.name) : a.role === 'employee' ? -1 : 1));
   const brief = task ? task.materials.filter((x) => x.stage === 'brief') : [];
   openModal({
-    title, form: 'task', sticky: true, wide: true, data: { task, selected },
+    title, form: 'task', sticky: true, wide: true, data: { task, selected, teams, teamId: t.team_id ? Number(t.team_id) : null },
     body: `${!admin ? `<div class="banner"><div class="ico">${ic('user')}</div><div class="grow small">This goes into <b>your own task list</b> — it isn’t posted on the company dashboard. Linking a client is optional.</div></div>` : ''}
       <label class="field"><span>Task title <span class="req">*</span></span>
         <input class="input" name="title" maxlength="300" required value="${esc(t.title || '')}" placeholder="e.g. Design the homepage banner"></label>
@@ -1099,11 +1143,13 @@ async function openTaskForm({ task = null, prefill = {} } = {}) {
       </div>
       <div class="field"><span>Deadline</span><input class="input" type="datetime-local" name="deadline" value="${toLocalInput(t.deadline)}">
         <div class="date-quick">${QUICK_DATES.map(([k, l]) => `<button type="button" class="btn sm ${k === 'clear' ? 'ghost' : ''}" data-act="quickDate" data-v="${k}">${l}</button>`).join('')}</div></div>
-      ${admin ? `<div class="field"><span>Assign to <span class="req">*</span> <span class="faint" style="font-weight:500">— required, pick one or more</span></span>
+      ${admin ? `<label class="field"><span>Team <span class="faint" style="font-weight:500">— everyone in it shares the task</span></span><select class="input" name="team_id" data-on-change="taskTeam">
+        <option value="">No team</option>${teams.map((x) => `<option value="${x.id}" ${String(t.team_id || '') === String(x.id) ? 'selected' : ''} ${x.members.length ? '' : 'disabled'}>${esc(x.name)} (${x.members.length ? plural(x.members.length, 'person') : 'no members yet'})</option>`).join('')}</select></label>
+      <div class="field"><span>Assign to <span class="req">*</span> <span class="faint" style="font-weight:500">— required: a team, or one or more people</span></span>
         <div class="assign-box" data-assign>
           <div class="people">${people.map((u) => `<button type="button" class="person ${selected.has(u.id) ? 'on' : ''}" data-act="togglePerson" data-id="${u.id}">${avatar(u)}${esc(u.name)}${u.role === 'superadmin' ? ' <span class="faint small">(admin)</span>' : ''}</button>`).join('')}</div>
           ${people.length <= 1 ? `<div class="small muted" style="margin-top:8px">No employees yet — <a href="#/team" data-act="nav" data-to="team">add your team</a> first.</div>` : ''}
-          <div class="err" data-assign-err style="margin-top:8px">${selected.size ? '' : 'Choose at least one employee to assign this task.'}</div>
+          <div class="err" data-assign-err style="margin-top:8px">${selected.size || t.team_id ? '' : 'Choose a team or at least one employee.'}</div>
         </div></div>` : ''}
       <label class="field"><span>Details</span><textarea class="input" name="description" placeholder="What needs to be done? Add any instructions.">${esc(t.description || '')}</textarea></label>
       ${brief.length ? `<div class="field"><span>Attached</span>${materialList(brief)}</div>` : ''}
@@ -1205,8 +1251,9 @@ const ACT = {
     const m = modalOf(el), id = Number(el.dataset.id);
     m.data.selected.has(id) ? m.data.selected.delete(id) : m.data.selected.add(id);
     el.classList.toggle('on', m.data.selected.has(id));
-    if (m.data.selected.size) $('[data-assign]', m.el).classList.remove('invalid');
-    $('[data-assign-err]', m.el).textContent = m.data.selected.size ? '' : 'Choose at least one employee to assign this task.';
+    const any = m.data.selected.size || m.data.teamId;
+    if (any) $('[data-assign]', m.el).classList.remove('invalid');
+    $('[data-assign-err]', m.el).textContent = any ? '' : 'Choose a team or at least one employee.';
   },
   updIdea(el) { const ta = el.closest('form').text; ta.value = ta.value.trim() ? `${ta.value.trim()}. ${el.textContent}` : el.textContent; ta.focus(); },
   async sendDigest() {
@@ -1315,6 +1362,21 @@ const ACT = {
     if (current?.r.name === 'settings') paint();
   },
   logout: () => logout(),
+  boardTeam(el) { S.ui.boardTeam = Number(el.dataset.id); paint(); },
+  newTeamTask: () => openTaskForm({ prefill: { team_id: current.data.current } }),
+  newTeam: () => openTeamForm(null, current.data.users),
+  editTeam(el) { openTeamForm(current.data.teams.find((x) => String(x.id) === el.dataset.id), current.data.users); },
+  togglePersonTeam(el) {
+    const set = modalOf(el).data.selected, id = Number(el.dataset.id);
+    set.has(id) ? set.delete(id) : set.add(id);
+    el.classList.toggle('on', set.has(id));
+  },
+  async delTeam(el) {
+    const m = modalOf(el);
+    if (!(await ask(`Delete team “${m.data.team.name}”? Its tasks stay with the people already on them.`, { ok: 'Delete team', danger: true }))) return;
+    await api('DELETE', `/api/teams/${m.data.team.id}`);
+    closeModalObj(m); toast('Team deleted', 'ok'); scheduleRefresh();
+  },
   forgotPassword: () => showForgot($('.auth-form [name=username]')?.value || ''),
   backToLogin: () => { history.replaceState(null, '', '#/'); showAuth(false); },
   async tempPassword(el) {
@@ -1340,6 +1402,17 @@ const INPUT = {
 };
 const CHANGE = {
   filter(el) { S.ui[el.dataset.k] = el.value; paint(); },
+  // Switching team swaps the old team's people for nobody: the server adds the new team's members itself.
+  taskTeam(el) {
+    const m = modalOf(el);
+    const old = m.data.teams.find((x) => x.id === m.data.teamId);
+    for (const u of old?.members || []) m.data.selected.delete(u.id);
+    m.data.teamId = el.value ? Number(el.value) : null;
+    $$('.person', m.el).forEach((p) => p.classList.toggle('on', m.data.selected.has(Number(p.dataset.id))));
+    const any = m.data.selected.size || m.data.teamId;
+    if (any) $('[data-assign]', m.el).classList.remove('invalid');
+    $('[data-assign-err]', m.el).textContent = any ? '' : 'Choose a team or at least one employee.';
+  },
 };
 
 // ------------------------------------------------------------------ form submits
@@ -1364,6 +1437,11 @@ const SUBMIT = {
     toast('Password saved', 'ok');
     startApp();
   },
+  async team(f, m) {
+    const body = { name: f.name.value, keywords: f.keywords.value, members: [...m.data.selected] };
+    await (m.data.team ? api('PATCH', `/api/teams/${m.data.team.id}`, body) : api('POST', '/api/teams', body));
+    closeModalObj(m); toast(body.name, 'ok', { title: 'Team saved' }); scheduleRefresh();
+  },
   async myPhone(f) {
     const r = await api('POST', '/api/me/phone', { phone: f.phone.value });
     S.user.phone = r.phone; toast(r.phone ? 'WhatsApp number saved' : 'WhatsApp number removed', 'ok');
@@ -1382,17 +1460,18 @@ const SUBMIT = {
     if (!body.title) { f.title.focus(); throw new Error('Please enter a task title'); }
     if (admin) {
       body.assignees = [...m.data.selected];
-      if (!body.assignees.length) {
+      body.team_id = f.team_id.value || null;
+      if (!body.assignees.length && !body.team_id) {
         const box = $('[data-assign]', f);
         box.classList.remove('invalid'); void box.offsetWidth; box.classList.add('invalid');
         box.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        throw new Error('Assign this task to at least one employee');
+        throw new Error('Assign this task to a team or at least one employee');
       }
     }
     body.materials = await collectAttachments(f);
     const t = m.data.task ? await api('PATCH', `/api/tasks/${m.data.task.id}`, body) : await api('POST', '/api/tasks', body);
     closeModalObj(m);
-    toast(m.data.task ? 'Changes saved' : admin ? `Assigned to ${t.assignees.map((a) => a.name).join(', ')}` : 'Added to your tasks', 'ok', { title: m.data.task ? 'Task updated' : t.title });
+    toast(m.data.task ? 'Changes saved' : admin ? `Assigned to ${t.team_name || t.assignees.map((a) => a.name).join(', ')}` : 'Added to your tasks', 'ok', { title: m.data.task ? 'Task updated' : t.title });
     scheduleRefresh();
   },
   async complete(f, m) {

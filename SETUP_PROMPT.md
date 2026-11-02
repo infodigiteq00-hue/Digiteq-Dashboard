@@ -45,7 +45,7 @@ You are setting up **Digiteq Dashboard** on this computer and putting it online.
 | `VAPID_SUBJECT` | `mailto:info@digiteqsolution.com` | text |
 | `CRON_SECRET` | generate a random string | **secret** |
 | `BOT_SECRET` | generate a random string (also goes in n8n) | **secret** |
-| `WAHA_URL` | `https://waha-production-d833.up.railway.app`, or a second WAHA's URL (see step 7) | text |
+| `WAHA_URL` | the bot's own WAHA URL (see step 7) | text |
 | `WAHA_API_KEY` | the WAHA service's `WAHA_API_KEY`. **The user** copies it from Railway → WAHA → Variables and pastes it into Cloudflare | **secret** |
 | `WAHA_SESSION` | `default` (the bot's session on its own WAHA) | text |
 | `RESEND_API_KEY`, `MAIL_FROM` | optional, for password-reset emails (resend.com) | secret / text |
@@ -105,8 +105,8 @@ Workers & Pages → **D1 SQL Database** → Create → name **`digiteq`**. Don't
    - Edit `SITE_URL` in `cron/wrangler.toml` (don't commit secrets).
    - Run `cd cron && npx wrangler deploy && npx wrangler secret put CRON_SECRET`.
 
-## Step 7: WhatsApp bot on the existing WAHA (Railway project `handsome-serenity`, info.digiteq00@gmail.com)
-WAHA runs at **https://waha-production-d833.up.railway.app**. It is separate from Quotegen's WAHA and used only by this bot, so the bot uses session **`default`** with its own WhatsApp number. Don't touch Quotegen's WAHA (`waha-production-74bf`).
+## Step 7: WhatsApp bot on its own WAHA (Railway project `n8n-whatsapp`, infodigiteq00@gmail.com)
+The bot needs its **own** WAHA service with its own WhatsApp number, session **`default`**. If it doesn't exist yet, add a service in project `n8n-whatsapp` from image `devlikeapro/waha` and give it a public domain; call its URL `<bot-waha-url>`. **Never touch Quotegen's WAHA (`waha-production-74bf`)** or its session.
 1. The user logs in to Railway. Confirm the account, then open the project.
 2. In waha → Variables, add `WHATSAPP_HOOK_URL` = `<n8n url>/webhook/waha`, `WHATSAPP_HOOK_EVENTS` = `message`, `WAHA_BASE_URL` = the WAHA URL, and `WHATSAPP_DOWNLOAD_MEDIA` = `true`. Then deploy.
 3. **QR scan.** The user opens `<waha url>/dashboard`, starts session `default`, and **scans the QR code with the bot's phone** (WhatsApp → Linked devices). Wait for status **WORKING**.

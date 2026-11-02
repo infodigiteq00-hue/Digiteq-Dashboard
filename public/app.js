@@ -279,7 +279,7 @@ const attachPicker = () => `<div class="attach" data-attach>
   <div class="dropzone">
     <button type="button" class="btn sm" data-act="attShowLink">${ic('link')} Add link</button>
     <label class="btn sm">${ic('upload')} Upload files<input type="file" multiple hidden data-att-file></label>
-    <div class="hint">Files up to 25 MB, or paste a Drive / Dropbox link</div>
+    <div class="hint">Drag files here or upload (up to 25 MB), or paste a Drive / Dropbox link</div>
   </div></div>`;
 function attachItems(box) { return (box._items ||= []); }
 function renderAttach(box) {
@@ -1590,7 +1590,7 @@ document.addEventListener('dragstart', (e) => {
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/plain', dragId);
 });
-document.addEventListener('dragend', (e) => { e.target.closest?.('.task')?.classList.remove('dragging'); $$('.col.drop').forEach((c) => c.classList.remove('drop')); });
+document.addEventListener('dragend', (e) => { dragId = null; e.target.closest?.('.task')?.classList.remove('dragging'); $$('.col.drop').forEach((c) => c.classList.remove('drop')); });
 document.addEventListener('dragover', (e) => {
   const col = e.target.closest?.('.col');
   if (!col || !dragId) return;
@@ -1614,6 +1614,34 @@ document.addEventListener('drop', async (e) => {
   } catch (err) { toast(err.message, 'bad'); }
 });
 
+// Dropped files go through the matching file input, so its change handler does the checks.
+function fileDropInput(t) {
+  const zone = t.closest?.('[data-attach], [data-contract], .logo-wrap, :has(> label > [data-logo-file])');
+  if (zone) return $('input[type=file]', zone);
+  const m = t.closest?.('.modal');
+  return m && ($('[data-att-file], [data-contract-file]', m) || $('input[type=file]', m));
+}
+const hasFiles = (e) => e.dataTransfer?.types.includes('Files');
+const clearFileOver = () => $$('.file-over').forEach((z) => z.classList.remove('file-over'));
+document.addEventListener('dragover', (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault(); // otherwise the browser navigates away to the dropped file
+  const input = fileDropInput(e.target);
+  e.dataTransfer.dropEffect = input ? 'copy' : 'none';
+  clearFileOver();
+  input?.parentElement.parentElement.classList.add('file-over');
+});
+document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) clearFileOver(); });
+document.addEventListener('drop', (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  clearFileOver();
+  const input = fileDropInput(e.target);
+  if (!input) return;
+  if (input.accept === 'image/*' && !e.dataTransfer.files[0]?.type.startsWith('image/')) { toast('Please drop an image file.', 'bad'); return; }
+  input.files = e.dataTransfer.files;
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+});
 // ------------------------------------------------------------------ global event wiring
 document.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-act]');

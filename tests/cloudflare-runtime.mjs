@@ -303,6 +303,20 @@ try {
   }
   assert.deepEqual(pushCalls, ['/send404', '/send410']);
 
+  // A team task alerts its members, without alerting members of another team.
+  const coder = await call(mf, 'POST', '/api/users', a, { name: 'Coder', username: 'coder', password: 'password123' });
+  const coderLogin = await call(mf, 'POST', '/api/login', null, { username: 'coder', password: 'password123' });
+  const teams = await call(mf, 'GET', '/api/teams', a);
+  const design = teams.find((t) => t.name === 'Designing');
+  const coding = teams.find((t) => t.name === 'Coding');
+  await call(mf, 'PATCH', `/api/teams/${design.id}`, a, { members: [e.id] });
+  await call(mf, 'PATCH', `/api/teams/${coding.id}`, a, { members: [coder.id] });
+  const teamTask = await call(mf, 'POST', '/api/tasks', a, { title: 'Design team brief', team_id: design.id });
+  const designAlerts = await call(mf, 'GET', '/api/notifications', et);
+  const codingAlerts = await call(mf, 'GET', '/api/notifications', coderLogin.token);
+  assert.ok(designAlerts.some((n) => n.task_id === teamTask.id && n.type === 'assigned' && n.body.includes('Designing team')));
+  assert.ok(!codingAlerts.some((n) => n.task_id === teamTask.id));
+
   const oversized = await mf.dispatchFetch('http://localhost/api/upload', {
     method: 'POST',
     headers: { Authorization: `Bearer ${a}`, 'Content-Length': String(26 * 1024 * 1024) },

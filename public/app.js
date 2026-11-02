@@ -164,17 +164,35 @@ function toast(text, kind = '', { title = '', onClick = null, ms = 4500 } = {}) 
   $('#toasts').append(el);
   setTimeout(() => el.remove(), ms);
 }
-function ding() {
+let alertAudio = null;
+async function unlockAlertAudio() {
   try {
-    const c = new (window.AudioContext || window.webkitAudioContext)();
-    const o = c.createOscillator(), g = c.createGain();
-    o.connect(g); g.connect(c.destination);
-    o.frequency.setValueAtTime(880, c.currentTime); o.frequency.setValueAtTime(1320, c.currentTime + 0.12);
-    g.gain.setValueAtTime(0.0001, c.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.18, c.currentTime + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + 0.45);
-    o.start(); o.stop(c.currentTime + 0.5);
-  } catch { /* audio not allowed yet */ }
+    alertAudio ||= new (window.AudioContext || window.webkitAudioContext)();
+    if (alertAudio.state === 'suspended') await alertAudio.resume();
+  } catch { /* audio unavailable */ }
+}
+// Browsers require a user gesture before audio can play.
+document.addEventListener('pointerdown', unlockAlertAudio);
+document.addEventListener('keydown', unlockAlertAudio);
+function ding() {
+  const c = alertAudio;
+  if (!c) return;
+  const play = () => {
+    try {
+      const t = c.currentTime, g = c.createGain();
+      g.connect(c.destination);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.6, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
+      [[880, 0], [1320, 0.15], [1760, 0.3]].forEach(([f, d]) => {
+        const o = c.createOscillator();
+        o.type = 'triangle'; o.frequency.setValueAtTime(f, t + d);
+        o.connect(g); o.start(t + d); o.stop(t + d + 0.35);
+      });
+    } catch { /* audio unavailable */ }
+  };
+  // Phones suspend audio in the background; an unlocked context can resume without a gesture.
+  if (c.state === 'running') play(); else c.resume().then(play).catch(() => {});
 }
 
 // ------------------------------------------------------------------ modals (bottom sheets on phones)
@@ -647,15 +665,15 @@ function updateItem(u) {
     </div></div>`;
 }
 VIEWS.updates = {
-  admin: true, title: () => 'Progress updates', sub: () => `Sent to you together every hour (${schedule.start}:00–${schedule.end}:00)`,
-  action: { label: 'Send digest now', act: 'sendDigest', plain: true },
+  title: () => 'Progress updates', sub: () => isAdmin() ? `Sent to you together every hour (${schedule.start}:00–${schedule.end}:00)` : 'Progress on your tasks and your team’s tasks',
+  action: () => isAdmin() ? { label: 'Send digest now', act: 'sendDigest', plain: true } : null,
   async load() {
     const [list, sch] = await Promise.all([api('GET', '/api/updates?days=7'), api('GET', '/api/updates/schedule')]);
     schedule = sch;
     return list;
   },
   html(list) {
-    if (!list.length) return `<div class="card">${empty('pulse', 'No updates in the last 7 days', 'When employees post progress on a task it shows up here, and you get one combined notification each hour.')}</div>`;
+    if (!list.length) return `<div class="card">${isAdmin() ? empty('pulse', 'No updates in the last 7 days', 'When employees post progress on a task it shows up here, and you get one combined notification each hour.') : empty('pulse', 'No updates in the last 7 days', 'Progress posted on your tasks shows up here.')}</div>`;
     const groups = [];
     for (const u of list) {
       const d = new Date(u.created_at);
@@ -667,7 +685,7 @@ VIEWS.updates = {
       }
       groups[groups.length - 1].items.push(u);
     }
-    return `<div class="banner"><div class="ico">${ic('clock')}</div><div class="grow small">Next combined update: <b>${fmtTime(schedule.next)}</b>. Employees with tasks in progress are reminded every hour to post what they finished.</div></div>
+    return `${isAdmin() ? `<div class="banner"><div class="ico">${ic('clock')}</div><div class="grow small">Next combined update: <b>${fmtTime(schedule.next)}</b>. Employees with tasks in progress are reminded every hour to post what they finished.</div></div>` : ''}
       ${groups.map((g) => `<div class="sub-head">${g.label} · ${plural(g.items.length, 'update')}</div><div class="card"><div class="feed">${g.items.map(updateItem).join('')}</div></div>`).join('')}`;
   },
 };
@@ -780,7 +798,8 @@ VIEWS.settings = {
         ${card('bell', 'Notifications', perm === 'granted' ? (S.pushOn ? 'On — alerts arrive even when the app is closed.' : 'On — alerts show while the app is open.')
     : perm === 'denied' ? 'Blocked. Allow notifications for this site in your browser or phone settings.'
       : perm === 'unsupported' ? 'Not supported here. On iPhone, install the app to the Home Screen first.' : 'Get alerts for new and finished tasks.',
-  perm === 'default' ? '<button class="btn primary sm" data-act="enablePush">Turn on</button>' : perm === 'granted' ? '<button class="btn sm" data-act="testNotif">Send a test</button>' : '')}
+  `${perm === 'default' ? '<button class="btn primary sm" data-act="enablePush">Turn on</button>' : perm === 'granted' ? `${S.pushOn ? '' : '<button class="btn sm" data-act="enablePush">Enable background alerts</button> '}<button class="btn sm" data-act="testNotif">Send a test</button>` : ''}
+   <button class="btn sm" data-act="testSound">Test sound</button><div class="tiny muted" style="margin-top:8px">Assignment sounds play while the app is open after you interact with it. Closed-app alerts use your device’s notification sound.</div>`)}
         <form class="card pad setting" data-submit="myPhone"><div class="mat-icon">${ic('phone')}</div><div class="grow"><b>WhatsApp number</b>
           <div class="small muted" style="margin:2px 0 10px">So the WhatsApp bot knows it’s you${isOwner() ? ' and can ask you who should do new tasks' : ' and can confirm your finished tasks'}. Include the country code.</div>
           <div class="row"><input class="input" name="phone" type="tel" inputmode="tel" value="${esc(S.user.phone || '')}" placeholder="91 98765 43210"><button class="btn sm">Save</button></div></div></form>
@@ -792,6 +811,7 @@ VIEWS.settings = {
           <label class="field" style="margin-bottom:10px"><span>New</span><input class="input" type="password" name="password" autocomplete="new-password" minlength="6" required></label></div>
           <button class="btn sm">Update password</button></div></form>
       </div>
+      ${isAdmin() ? '' : `<div class="section hide-desktop"><button class="btn block lg" data-act="nav" data-to="updates">${ic('pulse')} Progress updates</button></div>`}
       ${isAdmin() ? `<div class="section hide-desktop"><button class="btn block lg" data-act="nav" data-to="team">${ic('users')} Manage team</button></div>` : ''}
       ${isOwner() ? `<div class="section hide-desktop"><button class="btn block lg" data-act="nav" data-to="bot">${ic('msg')} WhatsApp bot</button></div>` : ''}
       <div class="section hide-desktop"><button class="btn danger block lg" data-act="logout">${ic('logout')} Log out</button></div>`;
@@ -887,7 +907,7 @@ function mountShell() {
   const admin = isAdmin();
   const main = admin
     ? [['home', 'Overview', 'home'], ['clients', 'Clients', 'briefcase'], ['tasks', 'Tasks', 'tasks'], ['boards', 'Team boards', 'board'], ['updates', 'Updates', 'pulse'], ['team', 'Team', 'users']]
-    : [['tasks', 'My tasks', 'tasks'], ['boards', 'Team boards', 'board'], ['clients', 'Clients', 'briefcase']];
+    : [['tasks', 'My tasks', 'tasks'], ['boards', 'Team boards', 'board'], ['updates', 'Updates', 'pulse'], ['clients', 'Clients', 'briefcase']];
   const owner = isOwner();
   const money = [['finance', 'Overview', 'spark'], ['receivables', 'Receivables', 'inbox'], ['commercials', 'Commercials', 'file'], ['pipeline', 'Opportunities', 'arrow'], ['bot', 'WhatsApp bot', 'msg']];
   const tabs = owner
@@ -1348,10 +1368,13 @@ const ACT = {
   async readAll() { await api('POST', '/api/notifications/read', {}); scheduleRefresh(); },
   enablePush: () => enablePush(),
   async testNotif() {
+    await unlockAlertAudio();
+    ding();
     const reg = await navigator.serviceWorker?.ready;
     if (reg) reg.showNotification('Digiteq notifications work ✓', { body: 'This is how alerts will look.', icon: '/icons/icon-192.png', badge: '/icons/badge-96.png' });
     else new Notification('Digiteq notifications work ✓');
   },
+  async testSound() { await unlockAlertAudio(); ding(); },
   theme(el) { setTheme(el.dataset.v); paint(); },
   async install() {
     if (!S.installEvt) return go('settings');
@@ -1652,7 +1675,7 @@ async function refreshAll() {
   for (const m of [...stack]) m.refresh?.().catch(() => {});
 }
 function showNewNotification(n) {
-  if (n.type === 'completed' || n.type === 'assigned') ding();
+  ding();
   toast(n.body, n.type === 'completed' ? 'ok' : '', { title: n.title, ms: 7000, onClick: () => n.task_id && openTask(n.task_id) });
   if (document.hidden && !S.pushOn && 'Notification' in window && Notification.permission === 'granted') {
     navigator.serviceWorker?.ready.then((reg) => reg.showNotification(n.title, {
@@ -1741,8 +1764,9 @@ async function enablePush() {
   if (!('Notification' in window)) return toast(isIOS() ? 'On iPhone, first install the app (Share → Add to Home Screen), then turn notifications on.' : 'This browser does not support notifications', 'bad');
   const perm = await Notification.requestPermission();
   if (perm !== 'granted') { toast('Notifications were blocked. You can allow them in the browser settings.', 'bad'); return paint(); }
-  try { await subscribePush(); } catch { /* push service unavailable: in-app alerts still work */ }
-  toast('Notifications are on', 'ok');
+  let push = false;
+  try { push = await subscribePush(); } catch { /* in-app alerts still work */ }
+  toast(push ? 'Notifications are on' : 'Alerts are available while the app is open. Background notifications could not be enabled.', push ? 'ok' : '');
   paint();
 }
 

@@ -1085,7 +1085,7 @@ function createApi(context) {
       `SELECT u.id, u.text, u.progress, u.created_at, u.task_id, us.name AS user_name, u.user_id,
       t.title AS task_title, t.status AS task_status, t.client_id, c.name AS client_name, c.color AS client_color, c.logo_key AS client_logo
     FROM task_updates u JOIN tasks t ON t.id = u.task_id LEFT JOIN users us ON us.id = u.user_id LEFT JOIN clients c ON c.id = t.client_id
-    WHERE u.created_at >= ? ${isAdmin(user) ? '' : 'AND u.user_id = ?'} ORDER BY u.id DESC LIMIT 500`,
+    WHERE u.created_at >= ? ${isAdmin(user) ? '' : 'AND t.id IN (SELECT task_id FROM task_assignees WHERE user_id = ?)'} ORDER BY u.id DESC LIMIT 500`,
       since,
       ...(isAdmin(user) ? [] : [user.id]),
     );
@@ -1146,11 +1146,11 @@ function createApi(context) {
     const where = task.client_name ? ` · ${task.client_name}` : '';
     if (admin) {
       await notify(
-        assignees.filter((u) => u !== user.id),
+        teamId ? assignees : assignees.filter((u) => u !== user.id),
         {
           type: 'assigned',
           title: `New task: ${title}`,
-          body: `Assigned by ${user.name}${where}`,
+          body: `${task.team_name ? `${task.team_name} team · ` : ''}Assigned by ${user.name}${where}`,
           task_id: id,
           client_id: task.client_id,
         },
@@ -1204,7 +1204,7 @@ function createApi(context) {
       await notify(added, {
         type: 'assigned',
         title: `New task: ${updated.title}`,
-        body: `Assigned by ${user.name}${updated.client_name ? ` · ${updated.client_name}` : ''}`,
+        body: `${updated.team_name ? `${updated.team_name} team · ` : ''}Assigned by ${user.name}${updated.client_name ? ` · ${updated.client_name}` : ''}`,
         task_id: task.id,
         client_id: updated.client_id,
       });

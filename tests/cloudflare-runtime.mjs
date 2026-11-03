@@ -404,6 +404,15 @@ try {
   assert.equal((await call(requestsWorker, 'GET', '/api/notifications', xt)).filter((n) => n.type === 'reminder').length, 0);
   for (const [clock, expected] of [['11:58', null], ['11:59', '11:59'], ['14:00', '11:59'], ['15:00', '15:00'], ['18:30', '18:00'], ['22:00', null]]) assert.equal(dueReminderSlot(clock), expected);
   assert.equal(sends.filter((s) => s.url.includes('sendText') && s.body.text?.includes('Please inspect') && s.body.text.includes(`/#/task/${rt.id}`)).length, 1);
+  const mt = await call(requestsWorker, 'POST', '/api/tasks', ot, { title: 'Move to team', assignees: [person.id] });
+  await call(requestsWorker, 'POST', `/api/tasks/${mt.id}/team`, xt, { team_id: 1 }, 403);
+  await call(requestsWorker, 'POST', `/api/tasks/${mt.id}/team`, pt, {}, 400);
+  const team = await call(requestsWorker, 'POST', '/api/teams', ot, { name: 'Move team', members: [other.id] });
+  const moved = await call(requestsWorker, 'POST', `/api/tasks/${mt.id}/team`, pt, { team_id: team.id });
+  assert.equal(moved.team_id, team.id);
+  assert.ok(moved.assignees.some((u) => u.id === person.id));
+  assert.ok(moved.assignees.some((u) => u.id === other.id));
+  assert.ok((await call(requestsWorker, 'GET', '/api/notifications', xt)).some((n) => n.type === 'assigned' && n.task_id === mt.id));
 
   // Date boundaries, fractional UTC offsets, and daylight-saving transitions.
   for (const [zone, input, midnight, next] of [

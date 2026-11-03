@@ -1098,6 +1098,31 @@ function createApi(context) {
     return await fullTask(task.id);
   });
 
+  route('POST', '/api/tasks/:id/team', async ({ user, body, params }) => {
+    const task = await loadTask(params.id);
+    if (!(isAdmin(user) || task.created_by === user.id || (await isAssignee(user, task.id)))) fail(403, 'Not allowed');
+    const teamId = await validTeam(body.team_id);
+    if (!teamId) fail(400, 'Choose a team');
+    const before = (await decorate([task]))[0].assignees.map((a) => a.id);
+    const assignees = await withTeam(teamId, before);
+    await DB.batch([
+      stmt('UPDATE tasks SET team_id = ?, updated_at = ? WHERE id = ?', teamId, now(), task.id),
+      ...assignees.map((uid) => stmt('INSERT OR IGNORE INTO task_assignees (task_id, user_id) VALUES (?,?)', task.id, uid)),
+    ]);
+    const updated = await fullTask(task.id);
+    const added = assignees.filter((u) => !before.includes(u) && u !== user.id);
+    if (added.length)
+      await notify(added, {
+        type: 'assigned',
+        title: `New task: ${updated.title}`,
+        body: `${updated.team_name} team · Moved by ${user.name}${updated.client_name ? ` · ${updated.client_name}` : ''}`,
+        task_id: task.id,
+        client_id: updated.client_id,
+      });
+    await broadcast();
+    return updated;
+  });
+
   // --- hourly progress updates (collected silently, sent to the super admin as one digest per hour)
   async function addUpdate(taskId, userId, text, progress = null, digested = 0) {
     await run(

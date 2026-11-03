@@ -1073,7 +1073,7 @@ function taskSheetHtml(t) {
     <dl class="props">
       ${t.client_name ? `<dt>${ic('briefcase')}Client</dt><dd><button type="button" class="chip click" data-act="nav" data-to="clients/${t.client_id}">${logo(taskClient(t), 'xs')}${esc(t.client_name)}</button></dd>` : ''}
       <dt>${ic('calendar')}Deadline</dt><dd>${t.deadline ? `${fmtFull(t.deadline)} ${t.status !== 'done' ? `<span class="chip ${d.cls}">${isOverdue(t) ? 'Overdue' : timeLeft(t.deadline)}</span>` : ''}` : '<span class="muted">No deadline</span>'}</dd>
-      ${t.team_name ? `<dt>${ic('board')}Team</dt><dd><span class="team-tag" style="--c:${esc(t.team_color || '#4f46e5')}">${esc(t.team_name)}</span></dd>` : ''}
+      ${t.team_name || t.can_work || t.can_edit ? `<dt>${ic('board')}Team</dt><dd>${t.team_name ? `<span class="team-tag" style="--c:${esc(t.team_color || '#4f46e5')}">${esc(t.team_name)}</span> ` : ''}${t.can_work || t.can_edit ? `<button type="button" class="chip click" data-act="moveToTeam">${ic('board')}${t.team_name ? 'Move to another board' : 'Add to team board'}</button>` : ''}</dd>` : ''}
       <dt>${ic('users')}Assigned to</dt><dd>${t.assignees.map((a) => `<span class="chip" style="padding-left:3px">${avatar(a, 'xxs')}${esc(a.name)}</span>`).join('') || '—'}</dd>
       <dt>${ic('user')}Created by</dt><dd>${esc(t.created_by_name || '—')} <span class="muted">· ${fmtShort(t.created_at)}</span></dd>
     </dl>
@@ -1251,12 +1251,22 @@ const ACT = {
   async tagPeople(el) {
     const parent = modalOf(el), users = (await api('GET', '/api/users')).filter((u) => u.id !== S.user.id);
     openModal({ title: 'Tag / ask review', form: 'tagPeople', data: { parent },
-      body: `<div class="field"><span>People</span>${users.map((u) => `<label class="row"><input type="checkbox" name="people" value="${u.id}"> ${esc(u.name)} ${u.is_owner ? '· Owner' : u.role === 'superadmin' ? '· Admin' : ''}</label>`).join('')}</div>
-        <label class="row"><input type="radio" name="kind" value="review" checked> Ask to review</label><label class="row"><input type="radio" name="kind" value="tag"> Just tag</label>
-        <label class="row"><input type="checkbox" name="assign"> Also assign this task to them</label>
-        <label class="field"><span>Note</span><textarea class="input" name="note" maxlength="2000" placeholder="What should they check or do?"></textarea></label>`,
+      body: `<div class="field"><span>Who should look at it?</span><div class="people">${users.map((u) => `<label class="person"><input class="pick" type="checkbox" name="people" value="${u.id}">${avatar(u)}${esc(u.name)}${u.is_owner ? ' <span class="faint small">(owner)</span>' : u.role === 'superadmin' ? ' <span class="faint small">(admin)</span>' : ''}</label>`).join('')}</div></div>
+        <div class="field"><span>What do you need?</span><div class="seg"><label><input class="pick" type="radio" name="kind" value="review" checked>${ic('check')} Ask to review</label><label><input class="pick" type="radio" name="kind" value="tag">${ic('bell')} Just tag</label></div></div>
+        <label class="field"><span>Note</span><textarea class="input" name="note" rows="3" maxlength="2000" placeholder="What should they check or do?"></textarea></label>
+        <label class="row owner-toggle tag-assign"><input type="checkbox" name="assign"><span><b>Also assign this task to them</b><br><span class="muted">They're added to the task. Nobody is removed.</span></span></label>
+        <p class="small muted" style="margin:10px 0 0">They get a WhatsApp message with your note and a link to this task.</p>`,
       foot: '<button type="button" class="btn" data-act="closeModal">Cancel</button><button class="btn primary">Send</button>' });
   },
+  async moveToTeam(el) {
+    const parent = modalOf(el), task = parent.data.task, teams = await api('GET', '/api/teams');
+    if (!teams.length) throw new Error('No teams yet. Ask an admin to create one in Team.');
+    openModal({ title: 'Move to team board', form: 'moveToTeam', data: { parent },
+      body: `<div class="field"><span>Team board</span><div class="people">${teams.map((tm) => `<label class="person team-pick"><input class="pick" type="radio" name="team" value="${tm.id}" ${tm.id === task.team_id ? 'checked' : ''}><span class="team-tag" style="--c:${esc(tm.color || '#4f46e5')}">${esc(tm.name)}</span><span class="faint small">${tm.members.length} ${tm.members.length === 1 ? 'person' : 'people'}</span></label>`).join('')}</div></div>
+        <p class="small muted" style="margin:10px 0 0">Everyone in the team is added to this task and sees it on the team board. Nobody is removed.</p>`,
+      foot: '<button type="button" class="btn" data-act="closeModal">Cancel</button><button class="btn primary">Move</button>' });
+  },
+
   answerRequest(el) {
     const parent = modalOf(el);
     openModal({ title: el.dataset.answer === 'good' ? 'Looks good' : 'Redo', form: 'answerRequest', data: { parent, id: el.dataset.id, answer: el.dataset.answer },
@@ -1467,6 +1477,13 @@ const SUBMIT = {
     await api('POST', `/api/tasks/${m.data.parent.data.task.id}/requests`, { to, kind: f.elements.kind.value, note: f.elements.note.value, assign: f.elements.assign.checked });
     closeModalObj(m); toast("Sent — they'll get it on WhatsApp too", 'ok'); await m.data.parent.refresh(); scheduleRefresh();
   },
+  async moveToTeam(f, m) {
+    const team = $('input[name="team"]:checked', f);
+    if (!team) throw new Error('Choose a team');
+    const t = await api('POST', `/api/tasks/${m.data.parent.data.task.id}/team`, { team_id: Number(team.value) });
+    closeModalObj(m); toast(`Moved to the ${t.team_name} board`, 'ok'); await m.data.parent.refresh(); scheduleRefresh();
+  },
+
   async answerRequest(f, m) {
     await api('POST', `/api/requests/${m.data.id}/answer`, { answer: m.data.answer, reply: f.elements.reply.value });
     closeModalObj(m); toast('Answer sent', 'ok'); await m.data.parent.refresh(); scheduleRefresh();

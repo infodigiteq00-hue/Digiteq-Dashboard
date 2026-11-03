@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { localParts, nextHour, startOfToday } from '../server/time.js';
+import { localParts, nextHour, startOfToday, dueReminderSlot } from '../server/time.js';
 
 const compiled = await build({
   stdin: {
@@ -376,6 +376,34 @@ try {
   );
   assert.deepEqual(demotions.sort(), [200, 400]);
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'superadmin'").first()).n, 1);
+
+  // Task requests, permissions, WhatsApp, and the pre-slot cron check.
+  const sends = [];
+  const requestsWorker = worker({ d1Databases: ['DB'], bindings: { WAHA_URL: 'https://waha.example.test', CRON_SECRET: 'secret' },
+    outboundService: async (request) => { sends.push({ url: request.url, body: await request.json() }); return new Response('{}', { status: 200 }); } });
+  const owner = await setup(requestsWorker), ot = owner.token;
+  const person = await call(requestsWorker, 'POST', '/api/users', ot, { name: 'Requester', username: 'requester', password: 'password123' });
+  const other = await call(requestsWorker, 'POST', '/api/users', ot, { name: 'Other', username: 'unrelated', password: 'password123' });
+  const pt = (await call(requestsWorker, 'POST', '/api/login', null, { username: 'requester', password: 'password123' })).token;
+  const xt = (await call(requestsWorker, 'POST', '/api/login', null, { username: 'unrelated', password: 'password123' })).token;
+  await call(requestsWorker, 'POST', '/api/me/phone', ot, { phone: '919876543210' });
+  const rt = await call(requestsWorker, 'POST', '/api/tasks', ot, { title: 'Review me', assignees: [person.id] });
+  await call(requestsWorker, 'POST', `/api/tasks/${rt.id}/requests`, xt, { to: [owner.user.id], kind: 'tag' }, 403);
+  await call(requestsWorker, 'POST', `/api/tasks/${rt.id}/requests`, pt, { to: [], kind: 'tag' }, 400);
+  const tagged = await call(requestsWorker, 'POST', `/api/tasks/${rt.id}/requests`, pt, { to: [owner.user.id], kind: 'review', note: 'Please inspect' });
+  const req = tagged.requests[0];
+  assert.ok((await call(requestsWorker, 'GET', '/api/notifications', ot)).some((n) => n.type === 'request' && n.task_id === rt.id));
+  await call(requestsWorker, 'POST', `/api/requests/${req.id}/answer`, pt, { answer: 'good' }, 403);
+  await call(requestsWorker, 'POST', `/api/tasks/${rt.id}/requests`, pt, { to: [other.id], kind: 'tag', assign: true });
+  assert.ok((await call(requestsWorker, 'GET', `/api/tasks/${rt.id}`, pt)).assignees.some((u) => u.id === other.id));
+  await call(requestsWorker, 'POST', `/api/tasks/${rt.id}/complete`, pt, {});
+  assert.equal((await call(requestsWorker, 'POST', `/api/requests/${req.id}/answer`, ot, { answer: 'redo', reply: 'Fix it' })).status, 'in_progress');
+  await call(requestsWorker, 'POST', `/api/requests/${req.id}/answer`, ot, { answer: 'good' }, 400);
+  assert.ok((await call(requestsWorker, 'GET', '/api/notifications', pt)).some((n) => n.type === 'request_answer' && n.task_id === rt.id));
+  await call(requestsWorker, 'POST', '/api/cron/hourly', null, {}, 200, { 'x-cron-key': 'secret' });
+  assert.equal((await call(requestsWorker, 'GET', '/api/notifications', xt)).filter((n) => n.type === 'reminder').length, 0);
+  for (const [clock, expected] of [['11:58', null], ['11:59', '11:59'], ['14:00', '11:59'], ['15:00', '15:00'], ['18:30', '18:00'], ['22:00', null]]) assert.equal(dueReminderSlot(clock), expected);
+  assert.equal(sends.filter((s) => s.url.includes('sendText') && s.body.text?.includes('Please inspect') && s.body.text.includes(`/#/task/${rt.id}`)).length, 1);
 
   // Date boundaries, fractional UTC offsets, and daylight-saving transitions.
   for (const [zone, input, midnight, next] of [

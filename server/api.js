@@ -1,6 +1,6 @@
 // Cloudflare Pages API. Helpers and route state are scoped to each request.
 import { generateVapid, sendPush } from './push.js';
-import { localParts, startOfToday, nextHour } from './time.js';
+import { localParts, startOfToday, nextHour, dueReminderSlot } from './time.js';
 import { FINANCE_SCHEMA, registerFinance } from './finance.js';
 import { BOT_SCHEMA, registerBot } from './bot.js';
 
@@ -35,6 +35,15 @@ CREATE TABLE IF NOT EXISTS task_assignees (
   PRIMARY KEY (task_id, user_id)
 );
 -- one table for every link/file: client materials, task brief materials, task completion materials
+CREATE TABLE IF NOT EXISTS task_requests (
+  id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  from_user INTEGER REFERENCES users(id) ON DELETE SET NULL, to_user INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('review','tag')), note TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','good','redo')),
+  reply TEXT, created_at TEXT NOT NULL, answered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS task_requests_user ON task_requests(to_user, status);
+CREATE INDEX IF NOT EXISTS task_requests_task ON task_requests(task_id);
 CREATE TABLE IF NOT EXISTS materials (
   id INTEGER PRIMARY KEY, owner_type TEXT NOT NULL CHECK (owner_type IN ('client','task')),
   owner_id INTEGER NOT NULL, stage TEXT NOT NULL DEFAULT 'brief' CHECK (stage IN ('brief','completion')),
@@ -172,6 +181,7 @@ async function checkPassword(pw, stored) {
 function createApi(context) {
   const { env } = context;
   const DB = env.DB;
+  const origin = (env.SITE_URL || new URL(context.request.url).origin).replace(/\/$/, '');
   const TIMEZONE = env.TIMEZONE || 'Asia/Kolkata';
   const WORK_START = Number(env.WORK_START ?? 9);
   const WORK_END = Number(env.WORK_END ?? 20);
@@ -212,7 +222,7 @@ function createApi(context) {
       "INSERT INTO meta (key, value) VALUES ('version', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(meta.value AS INTEGER) + 1",
     );
   }
-  async function notify(userIds, { type, title, body = '', task_id = null, client_id = null, url = null }) {
+  async function notify(userIds, { type, title, body = '', task_id = null, client_id = null, url = null, whatsapp = false, whatsappText = null }) {
     const created_at = now();
     for (const uid of new Set(userIds)) {
       const { meta } = await run(
@@ -225,6 +235,10 @@ function createApi(context) {
         client_id,
         created_at,
       );
+      if (whatsapp) {
+        const person = await get('SELECT phone FROM users WHERE id = ?', uid);
+        if (person?.phone) background(bot.send(bot.dm(person.phone), whatsappText || `*${title}*${body ? `\n${body}` : ''}\n\nOpen: ${origin}${url || (task_id ? `/#/task/${task_id}` : '/#/notifications')}`));
+      }
       background(
         pushTo(uid, {
           title,
@@ -404,7 +418,7 @@ function createApi(context) {
   }
   async function canView(user, task) {
     if (isAdmin(user) || task.client_id) return true;
-    return !!(await get('SELECT 1 FROM task_assignees WHERE task_id = ? AND user_id = ?', task.id, user.id));
+    return !!(await get('SELECT 1 FROM task_assignees WHERE task_id = ? AND user_id = ? UNION SELECT 1 FROM task_requests WHERE task_id = ? AND to_user = ?', task.id, user.id, task.id, user.id));
   }
   const isAssignee = async (user, taskId) =>
     !!(await get('SELECT 1 FROM task_assignees WHERE task_id = ? AND user_id = ?', taskId, user.id));
@@ -416,6 +430,7 @@ function createApi(context) {
   async function fullTask(id) {
     const t = (await decorate([await loadTask(id)]))[0];
     t.materials = await materialsFor('task', t.id);
+    t.requests = await all(`SELECT r.*, f.name AS from_name, u.name AS to_name FROM task_requests r LEFT JOIN users f ON f.id = r.from_user JOIN users u ON u.id = r.to_user WHERE r.task_id = ? ORDER BY r.id DESC`, t.id);
     return t;
   }
   async function validAssignees(ids) {
@@ -1047,6 +1062,42 @@ function createApi(context) {
     return t;
   });
 
+  route('POST', '/api/tasks/:id/requests', async ({ user, body, params }) => {
+    const task = await loadTask(params.id);
+    if (!(await canView(user, task)) || !(isAdmin(user) || task.created_by === user.id || await isAssignee(user, task.id))) fail(403, 'Not allowed');
+    const ids = await validAssignees(body.to);
+    if (ids.includes(user.id)) fail(400, 'Choose other people');
+    if (!['review', 'tag'].includes(body.kind)) fail(400, 'Invalid request kind');
+    const note = str(body.note, 2000);
+    await batch(ids.flatMap((id) => [
+      ...(body.assign ? [stmt('INSERT OR IGNORE INTO task_assignees (task_id, user_id) VALUES (?,?)', task.id, id)] : []),
+      stmt('INSERT INTO task_requests (task_id, from_user, to_user, kind, note, created_at) VALUES (?,?,?,?,?,?)', task.id, user.id, id, body.kind, note, now()),
+    ]));
+    await notify(ids, { type: 'request', title: body.kind === 'review' ? `${user.name} asked you to review: ${task.title}` : `${user.name} tagged you: ${task.title}`, body: note || task.client_name || '', task_id: task.id, client_id: task.client_id, whatsapp: true });
+    await broadcast();
+    return await fullTask(task.id);
+  });
+  route('POST', '/api/requests/:id/answer', async ({ user, body, params }) => {
+    const request = await get('SELECT * FROM task_requests WHERE id = ?', Number(params.id));
+    if (!request) fail(404, 'Request not found');
+    if (request.to_user !== user.id) fail(403, 'Not allowed');
+    if (!['good', 'redo'].includes(body.answer)) fail(400, 'Invalid answer');
+    const result = await run("UPDATE task_requests SET status = ?, reply = ?, answered_at = ? WHERE id = ? AND status = 'pending'", body.answer, str(body.reply, 2000), now(), request.id);
+    if (!result.meta.changes) fail(400, 'Already answered');
+    const task = await loadTask(request.task_id);
+    if (body.answer === 'redo' && task.status === 'done') {
+      await run("UPDATE tasks SET status = 'in_progress', completed_at = NULL, completed_by = NULL, completion_note = NULL, updated_at = ? WHERE id = ?", now(), task.id);
+      await addUpdate(task.id, user.id, 'Started working on this', null, isAdmin(user) ? 1 : 0);
+    }
+    if (request.from_user) await notify([request.from_user], { type: 'request_answer', title: body.answer === 'good' ? `${user.name} marked ${task.title} as good` : `${user.name} asked to redo ${task.title}`, body: str(body.reply, 2000), task_id: task.id, client_id: task.client_id, whatsapp: true });
+    if (body.answer === 'redo') {
+      const ids = (await decorate([task]))[0].assignees.map((a) => a.id).filter((id) => id !== user.id && id !== request.from_user);
+      await notify(ids, { type: 'reopened', title: `Task reopened: ${task.title}`, body: `Reopened by ${user.name}`, task_id: task.id, client_id: task.client_id });
+    }
+    await broadcast();
+    return await fullTask(task.id);
+  });
+
   // --- hourly progress updates (collected silently, sent to the super admin as one digest per hour)
   async function addUpdate(taskId, userId, text, progress = null, digested = 0) {
     await run(
@@ -1537,6 +1588,21 @@ function createApi(context) {
     await sendReminders();
     if (hour === WORK_START) await sendFinanceAlert();
   }
+  async function runRequestReminders() {
+    const local = localParts(TIMEZONE), clock = `${local.hour}:${local.minute}`;
+    const slot = ['11:59', '15:00', '18:00'].filter((s) => s <= clock).at(-1);
+    if (!slot) return;
+    const result = await run(`INSERT INTO meta (key, value) VALUES ('last_request_reminder', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE meta.value != excluded.value`, `${local.year}-${local.month}-${local.day} ${slot}`);
+    if (result.meta.changes !== 1) return;
+    if (!dueReminderSlot(clock)) return;
+    const rows = await all(`SELECT r.to_user, r.task_id, t.title, u.name AS from_name FROM task_requests r JOIN tasks t ON t.id = r.task_id LEFT JOIN users u ON u.id = r.from_user WHERE r.status = 'pending' ORDER BY r.id DESC`);
+    for (const uid of new Set(rows.map((r) => r.to_user))) {
+      const items = rows.filter((r) => r.to_user === uid), n = items.length;
+      const lines = items.slice(0, 10).map((r) => `• ${r.title} — from ${r.from_name || 'Someone'}: ${origin}/#/task/${r.task_id}`).join('\n') + (n > 10 ? `\n+${n - 10} more` : '');
+      const title = `Reminder: ${n} task${n > 1 ? 's' : ''} waiting for you`;
+      await notify([uid], { type: 'reminder', title, body: lines, task_id: n === 1 ? items[0].task_id : null, url: n === 1 ? `/#/task/${items[0].task_id}` : '/#/tasks', whatsapp: true, whatsappText: `*${title}*\n${lines}` });
+    }
+  }
   route(
     'POST',
     '/api/cron/hourly',
@@ -1544,6 +1610,7 @@ function createApi(context) {
       if (!env.CRON_SECRET || request.headers.get('x-cron-key') !== env.CRON_SECRET)
         fail(403, 'Invalid cron secret');
       await runHourly();
+      await runRequestReminders();
       await bot.flush();
       return { ok: true };
     },
@@ -1553,6 +1620,7 @@ function createApi(context) {
     if (Date.now() - lastHourlyCheck >= 60000) {
       lastHourlyCheck = Date.now();
       background(runHourly());
+      background(runRequestReminders());
     }
     if (Date.now() - lastBotFlush >= 30000) {
       lastBotFlush = Date.now();

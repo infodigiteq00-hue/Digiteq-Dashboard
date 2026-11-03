@@ -647,5 +647,5 @@ export function registerBot(h) {
     return { ok: true };
   });
 
-  return { flush };
+  return { flush, send, dm };
 }

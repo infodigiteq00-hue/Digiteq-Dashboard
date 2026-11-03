@@ -1084,6 +1084,12 @@ function taskSheetHtml(t) {
       </div>` : ''}
     ${t.description ? `<div class="sub-head">Details</div><div class="desc">${linkify(t.description)}</div>` : ''}
     ${progressSection(t)}
+    ${(t.requests?.length || t.can_work || t.can_edit) ? `<div class="sub-head">Requests</div>
+      ${t.can_work || t.can_edit ? '<button type="button" class="btn" data-act="tagPeople">Tag / ask review</button>' : ''}
+      ${(t.requests || []).map((r) => `<div class="feed-item" style="margin-top:12px">${avatar({ id: r.from_user, name: r.from_name || '?' }, 'xs')}<div class="grow">
+        <div class="small"><b>${esc(r.from_name || 'Someone')} → ${esc(r.to_name)}</b> · ${r.kind === 'review' ? 'Review' : 'Tag'} · ${fmtShort(r.created_at)} <span class="chip ${r.status === 'pending' ? 'amber' : r.status === 'good' ? 'green' : 'red'}">${r.status === 'pending' ? 'Waiting' : r.status === 'good' ? 'Looks good' : 'Redo'}</span></div>
+        ${r.note ? `<div class="desc">${linkify(r.note)}</div>` : ''}${r.reply ? `<div class="desc">${linkify(r.reply)}</div>` : ''}
+        ${r.status === 'pending' && r.to_user === S.user.id ? `<div class="chips"><button type="button" class="btn sm" data-act="answerRequest" data-id="${r.id}" data-answer="good">Looks good</button><button type="button" class="btn sm" data-act="answerRequest" data-id="${r.id}" data-answer="redo">Redo</button></div>` : ''}</div></div>`).join('')}` : ''}
     <div class="sub-head">Materials & links</div>${materialList(brief, 'No materials attached')}
     ${t.status === 'done' || work.length ? `<div class="sub-head">${t.status === 'done' ? 'Finished work' : 'Earlier submitted work'}</div>${materialList(work, 'No files or links were attached')}` : ''}`;
 }
@@ -1242,6 +1248,21 @@ const ACT = {
   toggleNotes: () => (S.notes.open ? closeNotes() : openNotes()),
   closeNotes: () => closeNotes(),
   openTask: (el) => openTask(el.dataset.id),
+  async tagPeople(el) {
+    const parent = modalOf(el), users = (await api('GET', '/api/users')).filter((u) => u.id !== S.user.id);
+    openModal({ title: 'Tag / ask review', form: 'tagPeople', data: { parent },
+      body: `<div class="field"><span>People</span>${users.map((u) => `<label class="row"><input type="checkbox" name="people" value="${u.id}"> ${esc(u.name)} ${u.is_owner ? '· Owner' : u.role === 'superadmin' ? '· Admin' : ''}</label>`).join('')}</div>
+        <label class="row"><input type="radio" name="kind" value="review" checked> Ask to review</label><label class="row"><input type="radio" name="kind" value="tag"> Just tag</label>
+        <label class="row"><input type="checkbox" name="assign"> Also assign this task to them</label>
+        <label class="field"><span>Note</span><textarea class="input" name="note" maxlength="2000" placeholder="What should they check or do?"></textarea></label>`,
+      foot: '<button type="button" class="btn" data-act="closeModal">Cancel</button><button class="btn primary">Send</button>' });
+  },
+  answerRequest(el) {
+    const parent = modalOf(el);
+    openModal({ title: el.dataset.answer === 'good' ? 'Looks good' : 'Redo', form: 'answerRequest', data: { parent, id: el.dataset.id, answer: el.dataset.answer },
+      body: '<label class="field"><span>Reply (optional)</span><textarea class="input" name="reply" maxlength="2000"></textarea></label>',
+      foot: '<button type="button" class="btn" data-act="closeModal">Cancel</button><button class="btn primary">Confirm</button>' });
+  },
   async quickDone(el) { openCompleteForm(await api('GET', `/api/tasks/${el.dataset.id}`)); },
   completeTask: (el) => openCompleteForm(modalOf(el).data.task),
   addWork(el) {
@@ -1440,6 +1461,16 @@ const CHANGE = {
 
 // ------------------------------------------------------------------ form submits
 const SUBMIT = {
+  async tagPeople(f, m) {
+    const to = $$('input[name="people"]:checked', f).map((el) => Number(el.value));
+    if (!to.length) throw new Error('Choose at least one person');
+    await api('POST', `/api/tasks/${m.data.parent.data.task.id}/requests`, { to, kind: f.elements.kind.value, note: f.elements.note.value, assign: f.elements.assign.checked });
+    closeModalObj(m); toast("Sent — they'll get it on WhatsApp too", 'ok'); await m.data.parent.refresh(); scheduleRefresh();
+  },
+  async answerRequest(f, m) {
+    await api('POST', `/api/requests/${m.data.id}/answer`, { answer: m.data.answer, reply: f.elements.reply.value });
+    closeModalObj(m); toast('Answer sent', 'ok'); await m.data.parent.refresh(); scheduleRefresh();
+  },
   async login(f) {
     const d = await api('POST', '/api/login', { username: f.username.value, password: f.password.value });
     S.loginPassword = d.user.must_change_password ? f.password.value : null; // kept in memory only, for the forced change

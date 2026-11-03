@@ -45,3 +45,10 @@ export function nextHour(timeZone, date = new Date()) {
   }
   throw new Error('Could not determine the next local hour');
 }
+
+export function dueReminderSlot(clock) {
+  const slot = ['11:59', '15:00', '18:00'].filter((s) => s <= clock).at(-1);
+  if (!slot) return null;
+  const minutes = (s) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3));
+  return minutes(clock) - minutes(slot) > 180 ? null : slot;
+}

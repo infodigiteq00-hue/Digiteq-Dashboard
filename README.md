@@ -14,6 +14,7 @@ There is one codebase: the same app runs as a **website**, an installable **PC a
 | 5 | **Employees add tasks to their own list only.** These tasks never go on the company dashboard as admin assignments. They are marked *Self-added*, can be linked to a client, and the admin is told about them | My tasks → Add task |
 | 6 | **Notes**: a notes button at the bottom (round button bottom-right on PC, centre of the tab bar on phones) pops open a notes window. *Add to tasks* → **Confirm** turns a note into a task; the note then shows "In my tasks" | Notes button |
 | – | **Hourly progress updates**: while a task is in progress, employees post short updates ("Figma file done", "Prototype complete") with an optional % done. The super admin is **not** pinged for each one: every hour they get **one notification with all updates together**, plus an *Updates* page grouped by hour. Employees with tasks in progress that have no update in the last hour get an hourly reminder | Task → Progress updates · Updates |
+| – | **Tag / ask for review**: anyone on a task can tag teammates, admins or the owner with a note (and optionally hand the task over). The tagged person gets a WhatsApp message with a link to that task and answers **Looks good** or **Redo**; the answer goes back the same way. Unanswered requests are reminded at **11:59, 15:00 and 18:00** | Task → Tag / ask review |
 | – | **Client logos**: upload a logo when adding/editing a client, or tap the image icon on the client page. It's shown on client cards, tasks and the overview | Clients |
 | – | **List or Board** view for tasks on PC. Drag cards between To do / In progress; dropping on Done opens the "Mark as done" sheet | Tasks |
 | – | **Light / Dark / Auto** theme | Settings |
@@ -129,7 +130,7 @@ Use the **Digiteq Cloudflare account**, where Pages project **`digiteqdash`** li
    npx wrangler secret put CRON_SECRET
    ```
 
-   Enter the **same secret** configured on Pages. Its schedule runs every 15 minutes and POSTs to `https://digiteqdash.pages.dev/api/cron/hourly`; the API claims each local hourly slot only once, during work hours. Set `SITE_URL` in `cron/wrangler.toml` if the Pages hostname changes. The cron Worker keeps digests/reminders running even with no open app. The endpoint refuses requests when `CRON_SECRET` is unset or incorrect.
+   Enter the **same secret** configured on Pages. Its schedule runs every minute and POSTs to `https://digiteqdash.pages.dev/api/cron/hourly`; the API claims each local hourly slot only once, during work hours. Set `SITE_URL` in `cron/wrangler.toml` if the Pages hostname changes. The cron Worker keeps digests/reminders running even with no open app, including request reminders at 11:59, 15:00 and 18:00 local time. The endpoint refuses requests when `CRON_SECRET` is unset or incorrect.
 6. Open [https://digiteqdash.pages.dev](https://digiteqdash.pages.dev) and create your production super admin. HTTPS supports installation and push notifications. VAPID keys are generated once and saved in D1 automatically.
 
 There is intentionally **no root `wrangler.toml`**: production Pages bindings belong to the Digiteq account and are configured in its dashboard. `cron/wrangler.toml` configures only the scheduled Worker.
@@ -172,7 +173,7 @@ server/bot.js               WhatsApp bot: grouping, private questions, replies, 
 server/ai.js                message understanding: built-in rules, optional AI provider
 n8n/                        importable n8n workflow (WAHA → dashboard, 1-minute tick)
 docs/WHATSAPP_BOT.md        WhatsApp bot setup (WAHA, n8n, Cloudflare, AI)
-cron/                       scheduled Worker (every 15 minutes)
+cron/                       scheduled Worker (every minute)
 public/index.html           app shell
 public/app.js               front-end, adaptive sync polling and direct uploads
 public/finance.js           owner Finance screens

@@ -48,6 +48,7 @@ Then add **`CRON_SECRET`** as type **Secret**:
 Go to **Deployments**, open the menu (⋯) on the latest Production deployment, and choose **Retry deployment**. Wait until its status is **Success**. Settings only apply after this.
 
 ## Step 6: Hourly job (progress digest, reminders, morning money check)
+The minute trigger also sends request reminders at 11:59, 15:00 and 18:00 local time.
 1. Workers & Pages → **Create** → **Worker**.
    - Name it **`digiteq-cron`** and deploy the Hello World template.
    - Click **Edit code**, replace everything with the code below, then **Deploy**.
@@ -68,7 +69,7 @@ export default {
 2. Worker → **Settings → Variables and Secrets**:
    - `SITE_URL` (Text) = `https://digiteqdash.pages.dev`
    - `CRON_SECRET` (Secret): **the user** pastes the same value as in step 3.
-3. Worker → **Settings → Triggers → Cron Triggers** → Add **`*/15 * * * *`**.
+3. Worker → **Settings → Triggers → Cron Triggers** → Add **`* * * * *`**.
 
 ## Step 7: Check
 1. Open `https://digiteqdash.pages.dev/api/setup`. It should show `{"needsSetup":false}`.
@@ -76,7 +77,7 @@ export default {
    - As owner: open a client and upload a **logo**, then attach a **file** to a task. Both should work without "Missing FILES binding".
    - In **Team → Teams**, add people to Designing, Coding and Marketing.
    - Everyone adds their WhatsApp number in Settings for later. It's optional now.
-3. After the next quarter-hour, the cron Worker's **Logs** should show a successful scheduled run. A 403 means `CRON_SECRET` differs between the Worker and the site.
+3. After the next minute, the cron Worker's **Logs** should show a successful scheduled run. A 403 means `CRON_SECRET` differs between the Worker and the site.
 4. Optional: add a custom domain, e.g. `dashboard.digiteqsolution.com`, under `digiteqdash` → **Custom domains**. If you do, update the Worker's `SITE_URL`.
 
 ## Step 8: Report

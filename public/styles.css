@@ -118,6 +118,9 @@ svg.i { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none;
 .topbar h1 { font-size: 19px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar .sub { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar .back { margin-left: -10px; }
+.clock { display: inline-flex; align-items: baseline; gap: 6px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.clock b { color: var(--text); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+@media (max-width: 420px) { .clock span { display: none; } }
 .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); padding: 4px 10px; border-radius: 99px; background: var(--surface-2); border: 1px solid var(--border); }
 .live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
 .live.on { color: var(--green); }

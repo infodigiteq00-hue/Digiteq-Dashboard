@@ -191,7 +191,7 @@ export function registerBot(h) {
     }
     return null;
   }
-  const fmtDue = (iso) => (iso ? new Date(iso).toLocaleString('en-IN', { timeZone: TIMEZONE, weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : '');
+  const fmtDue = (iso) => (iso ? new Date(iso).toLocaleString('en-IN', { timeZone: TIMEZONE, weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true }) : '');
   function matchNames(text, team) {
     let t = ` ${String(text || '').toLowerCase().replace(/[,&+/]|\band\b|\baur\b/g, ' ')} `;
     const found = [];
@@ -409,7 +409,7 @@ export function registerBot(h) {
     let task;
     try { task = await internal('GET', `/api/tasks/${item.task_id}`, owner); } catch { task = null; }
     if (!task) return null;
-    const stamp = new Date().toLocaleString('en-IN', { timeZone: TIMEZONE, day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+    const stamp = new Date().toLocaleString('en-IN', { timeZone: TIMEZONE, day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true });
     const note = `\n\n🔁 Change (${stamp}${item.sender_name ? `, from ${item.sender_name}` : ''}):\n${item.text}`;
     const updated = await internal('PATCH', `/api/tasks/${task.id}`, owner, {
       description: `${task.description || ''}${note}`.trim(), assignees: task.assignees.map((a) => a.id), materials: parse(item.materials, []),

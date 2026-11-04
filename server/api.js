@@ -1620,7 +1620,10 @@ function createApi(context) {
     const result = await run(`INSERT INTO meta (key, value) VALUES ('last_request_reminder', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE meta.value != excluded.value`, `${local.year}-${local.month}-${local.day} ${slot}`);
     if (result.meta.changes !== 1) return;
     if (!dueReminderSlot(clock)) return;
-    const rows = await all(`SELECT r.to_user, r.task_id, t.title, u.name AS from_name FROM task_requests r JOIN tasks t ON t.id = r.task_id LEFT JOIN users u ON u.id = r.from_user WHERE r.status = 'pending' ORDER BY r.id DESC`);
+    const rows = await all(`SELECT r.to_user, r.task_id, t.title, u.name AS from_name FROM task_requests r JOIN tasks t ON t.id = r.task_id LEFT JOIN users u ON u.id = r.from_user WHERE r.status = 'pending'
+      AND NOT (t.status = 'done' AND t.completed_at > r.created_at)
+      AND NOT EXISTS (SELECT 1 FROM task_updates x WHERE x.task_id = r.task_id AND x.user_id = r.to_user AND x.created_at > r.created_at)
+      ORDER BY r.id DESC`);
     for (const uid of new Set(rows.map((r) => r.to_user))) {
       const items = rows.filter((r) => r.to_user === uid), n = items.length;
       const lines = items.slice(0, 10).map((r) => `• ${r.title} — from ${r.from_name || 'Someone'}: ${origin}/#/task/${r.task_id}`).join('\n') + (n > 10 ? `\n+${n - 10} more` : '');

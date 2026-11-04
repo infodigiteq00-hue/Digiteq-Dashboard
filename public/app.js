@@ -54,15 +54,22 @@ const PALETTE = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#e11d48', '#db2777
 const userColor = (id) => PALETTE[(Number(id) || 0) % PALETTE.length];
 const pad = (n) => String(n).padStart(2, '0');
 const sameDay = (a, b) => a.toDateString() === b.toDateString();
-const fmtTime = (d) => new Date(d).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+const fmtTime = (d) => new Date(d).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
 function fmtShort(iso) {
   const d = new Date(iso);
-  const opts = { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' };
+  const opts = { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true };
   if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
   return d.toLocaleString(undefined, opts);
 }
 const fmtDay = (iso) => new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-const fmtFull = (iso) => new Date(iso).toLocaleString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+const fmtFull = (iso) => new Date(iso).toLocaleString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+// Live date and time in the top bar.
+function tickClock() {
+  const d = new Date();
+  for (const el of document.querySelectorAll('[data-clock]'))
+    el.innerHTML = `<b>${fmtTime(d)}</b><span>${d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}</span>`;
+}
+setInterval(tickClock, 1000);
 function timeAgo(iso) {
   const s = Math.round((Date.now() - new Date(iso)) / 1000);
   if (s < 45) return 'just now';
@@ -665,7 +672,7 @@ function updateItem(u) {
     </div></div>`;
 }
 VIEWS.updates = {
-  title: () => 'Progress updates', sub: () => isAdmin() ? `Sent to you together every hour (${schedule.start}:00–${schedule.end}:00)` : 'Progress on your tasks and your team’s tasks',
+  title: () => 'Progress updates', sub: () => isAdmin() ? `Sent to you together every hour (${fmtTime(new Date(2000, 0, 1, schedule.start))}–${fmtTime(new Date(2000, 0, 1, schedule.end))})` : 'Progress on your tasks and your team’s tasks',
   action: () => isAdmin() ? { label: 'Send digest now', act: 'sendDigest', plain: true } : null,
   async load() {
     const [list, sch] = await Promise.all([api('GET', '/api/updates?days=7'), api('GET', '/api/updates/schedule')]);
@@ -935,6 +942,7 @@ function mountShell() {
       <header class="topbar">
         <button class="icon-btn back hidden" data-act="back" aria-label="Back">${ic('back')}</button>
         <div class="titles"><h1 id="title"></h1><div class="sub" id="subtitle"></div></div>
+        <span class="clock" data-clock></span>
         <span class="live" title="Live updates">Live</span>
         <button class="btn primary hide-mobile hidden" data-top-action></button>
         <button class="icon-btn ${admin ? '' : 'hide-mobile'}" data-act="nav" data-to="notifications" aria-label="Notifications">${ic('bell')}<span class="count hidden" data-badge></span></button>

@@ -7,7 +7,8 @@ import { BOT_SCHEMA, registerBot } from './bot.js';
 const SCHEMA = `CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('superadmin','employee')),
-  is_owner INTEGER NOT NULL DEFAULT 0, email TEXT, phone TEXT, must_change_password INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+  is_owner INTEGER NOT NULL DEFAULT 0, email TEXT, phone TEXT, must_change_password INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+  photo_key TEXT
 );
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TEXT NOT NULL
@@ -110,6 +111,7 @@ async function migrate(DB) {
   if (!cols.includes('email')) steps.push(['ALTER TABLE users ADD COLUMN email TEXT']);
   if (!cols.includes('must_change_password')) steps.push(['ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0']);
   if (!cols.includes('phone')) steps.push(['ALTER TABLE users ADD COLUMN phone TEXT']);
+  if (!cols.includes('photo_key')) steps.push(['ALTER TABLE users ADD COLUMN photo_key TEXT']);
   const taskCols = (await DB.prepare('PRAGMA table_info(tasks)').all()).results.map((c) => c.name);
   if (!taskCols.includes('team_id')) steps.push(['ALTER TABLE tasks ADD COLUMN team_id INTEGER REFERENCES teams(id) ON DELETE SET NULL']);
   for (const sqls of steps) {
@@ -258,7 +260,7 @@ function createApi(context) {
   }
   const publicUser = (u) =>
     u && { id: u.id, name: u.name, username: u.username, role: u.role, is_owner: !!u.is_owner, email: u.email || '',
-      phone: u.phone || '', must_change_password: !!u.must_change_password, created_at: u.created_at };
+      phone: u.phone || '', must_change_password: !!u.must_change_password, created_at: u.created_at, photo_key: u.photo_key || null };
 
   const isAdmin = (u) => u.role === 'superadmin';
   // WhatsApp number: digits with country code, e.g. 919876543210 (the bot matches on the last 10 digits).
@@ -533,6 +535,13 @@ function createApi(context) {
     email_reset: !!(env.RESEND_API_KEY && env.MAIL_FROM),
     unread: (await get('SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND is_read = 0', user.id))
       .n,
+    // Sidebar counts: clients, and open tasks (everyone's for admins, your own for employees).
+    counts: await get(
+      `SELECT (SELECT COUNT(*) FROM clients) AS clients, (SELECT COUNT(*) FROM tasks t WHERE t.status != 'done'
+        AND (? OR t.id IN (SELECT task_id FROM task_assignees WHERE user_id = ?))) AS open_tasks`,
+      isAdmin(user) ? 1 : 0,
+      user.id,
+    ),
   }));
   route('POST', '/api/me/password', async ({ user, body, token }) => {
     if (!(await checkPassword(String(body.current || ''), user.password_hash)))
@@ -694,6 +703,13 @@ function createApi(context) {
     await broadcast();
     return { password, username: target.username };
   });
+  // Profile photo: a data URL replaces it, null removes it. Stored like client logos.
+  route('POST', '/api/me/photo', async ({ user, body }) => {
+    const key = body.photo ? await saveLogo(body.photo) : null;
+    await run('UPDATE users SET photo_key = ? WHERE id = ?', key, user.id);
+    await removeLogo(user.photo_key);
+    return { user: publicUser({ ...user, photo_key: key }) };
+  });
   route('POST', '/api/me/phone', async ({ user, body }) => {
     const phone = await cleanPhone(body.phone, user.id);
     await run('UPDATE users SET phone = ? WHERE id = ?', phone, user.id);
@@ -707,8 +723,8 @@ function createApi(context) {
 
   // --- users / team
   route('GET', '/api/users', async ({ user }) => {
-    const rows = await all('SELECT id, name, username, role, is_owner, email, phone, created_at FROM users ORDER BY role DESC, is_owner DESC, name');
-    if (!isAdmin(user)) return rows.map(({ id, name, role }) => ({ id, name, role }));
+    const rows = await all('SELECT id, name, username, role, is_owner, email, phone, photo_key, created_at FROM users ORDER BY role DESC, is_owner DESC, name');
+    if (!isAdmin(user)) return rows.map(({ id, name, role, photo_key }) => ({ id, name, role, photo_key }));
     for (const r of rows) r.is_owner = !!r.is_owner;
     const stats = await all(
       `SELECT ta.user_id, SUM(t.status != 'done') AS open, SUM(t.status = 'done') AS done,
@@ -806,6 +822,7 @@ function createApi(context) {
       id,
     );
     if (!deleted.meta.changes) fail(400, 'You need at least one super admin');
+    await removeLogo(target.photo_key);
     await broadcast();
     return { ok: true };
   });
@@ -1471,20 +1488,26 @@ function createApi(context) {
       counts: await get(
         `SELECT SUM(status = 'todo') AS todo, SUM(status = 'in_progress') AS in_progress,
       SUM(status != 'done' AND deadline < ?) AS overdue, SUM(status = 'done' AND completed_at >= ?) AS done_today,
+      SUM(status != 'done' AND deadline >= ? AND deadline <= ?) AS due_soon,
       (SELECT COUNT(*) FROM clients) AS clients FROM tasks`,
         t,
         startOfDay.toISOString(),
+        t,
+        in3days,
       ),
       finance: isOwner(user) ? await financeSummary() : null,
-      recent_done: await decorate(
-        await all(`${TASK_SELECT} WHERE t.status = 'done' ORDER BY t.completed_at DESC LIMIT 8`),
-      ),
+      // The four Overview lists, one per stat card.
       due_soon: await decorate(
-        await all(
-          `${TASK_SELECT} WHERE t.status != 'done' AND t.deadline IS NOT NULL AND t.deadline <= ?
-      ORDER BY t.deadline LIMIT 10`,
-          in3days,
-        ),
+        await all(`${TASK_SELECT} WHERE t.status != 'done' AND t.deadline >= ? AND t.deadline <= ? ORDER BY t.deadline LIMIT 20`, t, in3days),
+      ),
+      in_progress: await decorate(
+        await all(`${TASK_SELECT} WHERE t.status = 'in_progress' ORDER BY t.deadline IS NULL, t.deadline LIMIT 20`),
+      ),
+      overdue: await decorate(
+        await all(`${TASK_SELECT} WHERE t.status != 'done' AND t.deadline < ? ORDER BY t.deadline LIMIT 20`, t),
+      ),
+      done_today: await decorate(
+        await all(`${TASK_SELECT} WHERE t.status = 'done' AND t.completed_at >= ? ORDER BY t.completed_at DESC LIMIT 20`, startOfDay.toISOString()),
       ),
       latest_updates:
         await all(`SELECT u.id, u.text, u.progress, u.created_at, u.task_id, us.name AS user_name, u.user_id, t.title AS task_title,
@@ -1501,7 +1524,8 @@ function createApi(context) {
       ),
       client_deadlines: await all(
         `SELECT d.*, c.name AS client_name, c.color AS client_color, c.logo_key AS client_logo FROM client_deadlines d
-      JOIN clients c ON c.id = d.client_id WHERE d.done = 0 AND d.due_at <= ? ORDER BY d.due_at LIMIT 10`,
+      JOIN clients c ON c.id = d.client_id WHERE d.done = 0 AND d.due_at >= ? AND d.due_at <= ? ORDER BY d.due_at LIMIT 10`,
+        t,
         in3days,
       ),
     };

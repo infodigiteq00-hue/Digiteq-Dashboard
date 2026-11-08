@@ -271,6 +271,13 @@ try {
   await call(mf, 'DELETE', `/api/clients/${client.id}`, a);
   assert.equal(await bucket.head(key), null);
   assert.equal(await bucket.head(`logos/${client.logo_key}`), null);
+  // Profile photo: saved in R2, visible to teammates, replaced and removed cleanly.
+  const withPhoto = (await call(mf, 'POST', '/api/me/photo', et, { photo: 'data:image/jpeg;base64,YQ==' })).user;
+  assert.ok(await bucket.head(`logos/${withPhoto.photo_key}`));
+  assert.equal((await call(mf, 'GET', '/api/users', et)).find((u) => u.id === e.id).photo_key, withPhoto.photo_key);
+  await call(mf, 'POST', '/api/me/photo', et, { photo: 'data:text/html;base64,YQ==' }, 400);
+  assert.equal((await call(mf, 'POST', '/api/me/photo', et, { photo: null })).user.photo_key, null);
+  assert.equal(await bucket.head(`logos/${withPhoto.photo_key}`), null);
   assert.equal(await db.prepare('SELECT * FROM tasks WHERE id = ?').bind(child.id).first(), null);
   assert.equal(
     (await db.prepare('SELECT task_id FROM notes WHERE id = ?').bind(note.id).first()).task_id,

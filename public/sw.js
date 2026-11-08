@@ -1,8 +1,8 @@
 // Service worker: makes the dashboard installable, opens instantly, and shows push notifications.
 // App files are network-first (so updates land immediately) with a cached fallback. API calls are never cached.
-const CACHE = 'digiteq-v12';
+const CACHE = 'digiteq-v14';
 const SHELL = ['/', '/index.html', '/app.js', '/finance.js', '/bot.js', '/styles.css', '/manifest.webmanifest',
-  '/icons/icon-192.png', '/icons/icon-512.png', '/icons/badge-96.png', '/icons/favicon-32.png'];
+  '/icons/icon-192.png', '/icons/icon-512.png', '/icons/badge-96.png', '/icons/favicon-32.png', '/brand/logo-dark-bg.webp', '/brand/mark.svg'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

@@ -102,6 +102,31 @@ function quickDateValue(key) {
   return toLocalInput(d.toISOString());
 }
 const QUICK_DATES = [['today', 'Today'], ['tomorrow', 'Tomorrow'], ['3d', 'In 3 days'], ['week', 'Next week'], ['clear', 'None']];
+// Deadlines: a date picker plus a typed time ("6", "6:30 pm", "18:30"). No time typed means 6:00 pm.
+function parseTime(v) {
+  const m = /^\s*(\d{1,2})(?:[:.](\d{2}))?\s*(?:([ap])\.?\s*m?\.?)?\s*$/i.exec(v || '');
+  if (!m) return null;
+  let h = +m[1]; const min = +(m[2] || 0), ap = m[3]?.toLowerCase();
+  if (min > 59 || (ap ? h < 1 || h > 12 : h > 23)) return null;
+  if (ap) h = (h % 12) + (ap === 'p' ? 12 : 0);
+  return [h, min];
+}
+const dueField = (name, iso, keep = '', extra = '') => `<span class="due">
+  <input class="input" type="date" name="${name}" value="${iso ? toLocalInput(iso).slice(0, 10) : ''}" ${keep ? `${keep}="${name}-d"` : ''} aria-label="Date" ${extra}>
+  <input class="input due-time" name="${name}_time" value="${iso ? fmtTime(iso) : ''}" ${keep ? `${keep}="${name}-t"` : ''} placeholder="Time, e.g. 6:30 pm" autocomplete="off" aria-label="Time"></span>`;
+function readDue(f, name) {
+  const date = f[name].value, time = f[`${name}_time`].value.trim();
+  if (!date && !time) return null;
+  const t = time ? parseTime(time) : [18, 0];
+  if (!t) { f[`${name}_time`].focus(); throw new Error('Type the time like 6:30 pm or 18:30'); }
+  const d = date ? new Date(`${date}T00:00`) : new Date();
+  d.setHours(t[0], t[1], 0, 0);
+  return d.toISOString();
+}
+function setDue(f, name, iso) {
+  f[name].value = iso ? toLocalInput(iso).slice(0, 10) : '';
+  f[`${name}_time`].value = iso ? fmtTime(iso) : '';
+}
 
 const ICONS = {
   home: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
@@ -150,7 +175,13 @@ const ICONS = {
   image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21"/>',
 };
 const ic = (name) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
-const avatar = (u, cls = '') => `<span class="avatar ${cls}" style="--c:${userColor(u.id)}" title="${esc(u.name)}">${esc(initials(u.name))}</span>`;
+// Profile photo when the person uploaded one (S.photos is filled from /api/users), coloured initials otherwise.
+const avatar = (u, cls = '') => {
+  const key = u.photo_key || S.photos?.[u.id];
+  return key ? `<span class="avatar photo ${cls}" title="${esc(u.name)}"><img src="/api/logos/${esc(key)}" alt="" loading="lazy"></span>`
+    : `<span class="avatar ${cls}" style="--c:${userColor(u.id)}" title="${esc(u.name)}">${esc(initials(u.name))}</span>`;
+};
+const loadPhotos = async () => { S.photos = Object.fromEntries((await api('GET', '/api/users')).filter((u) => u.photo_key).map((u) => [u.id, u.photo_key])); };
 // Client logo: uploaded image, or coloured initials.
 const logo = (c, size = '') => (c.logo_key
   ? `<span class="logo img ${size}"><img src="/api/logos/${esc(c.logo_key)}" alt="${esc(c.name)} logo" loading="lazy"></span>`
@@ -322,7 +353,7 @@ async function collectAttachments(root) {
   return out;
 }
 // Shrink a logo to max 256 px and re-encode as PNG (keeps transparency, small upload, strips anything odd).
-async function resizeImage(file, max = 256) {
+async function resizeImage(file, max = 256, square = false) {
   const url = URL.createObjectURL(file);
   try {
     const img = await new Promise((res, rej) => {
@@ -332,8 +363,13 @@ async function resizeImage(file, max = 256) {
       i.src = url;
     });
     const w = img.naturalWidth || max, h = img.naturalHeight || max;
-    const scale = Math.min(1, max / Math.max(w, h));
     const c = document.createElement('canvas');
+    if (square) { // centre crop for profile photos, JPEG keeps them small
+      const side = Math.min(w, h); c.width = c.height = Math.min(max, side);
+      c.getContext('2d').drawImage(img, (w - side) / 2, (h - side) / 2, side, side, 0, 0, c.width, c.height);
+      return c.toDataURL('image/jpeg', 0.88);
+    }
+    const scale = Math.min(1, max / Math.max(w, h));
     c.width = Math.max(1, Math.round(w * scale)); c.height = Math.max(1, Math.round(h * scale));
     c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
     return c.toDataURL('image/png');
@@ -350,6 +386,12 @@ document.addEventListener('change', async (e) => {
       }
       input.value = '';
       renderAttach(box);
+    } else if (input.matches('[data-photo-file]') && input.files[0]) {
+      const photo = await resizeImage(input.files[0], 320, true);
+      input.value = '';
+      S.user = (await api('POST', '/api/me/photo', { photo })).user;
+      await loadPhotos(); mountShell(); renderView();
+      toast('Profile photo updated', 'ok');
     } else if (input.matches('[data-logo-file]') && input.files[0]) {
       const dataUrl = await resizeImage(input.files[0]);
       input.value = '';
@@ -437,6 +479,46 @@ function notifBanner() {
 // ------------------------------------------------------------------ views
 const VIEWS = {};
 
+// Overview: four stat cards switch the task list underneath, like filters.
+const OV_LISTS = {
+  due: ['Due soon', 'Next 3 days', 'Due in the next 3 days', 'Nothing due soon', 'Upcoming deadlines will show here.'],
+  in_progress: ['In progress', 'Being worked on', 'In progress', 'Nothing in progress', 'Tasks your team starts will show here.'],
+  overdue: ['Overdue', 'Past their deadline', 'Overdue', 'No overdue tasks', 'Everything is on schedule.'],
+  done: ['Done today', 'Since midnight', 'Completed today', 'No finished tasks yet', 'When your team marks tasks as done, they appear here.'],
+};
+function ovDue(iso, done) {
+  if (done) return { text: iso ? fmtTime(iso) : 'Done', cls: 'done' };
+  if (!iso) return { text: 'No deadline', cls: '' };
+  const d = new Date(iso), now = new Date();
+  const days = Math.round((new Date(d).setHours(0, 0, 0, 0) - new Date(now).setHours(0, 0, 0, 0)) / 86400000);
+  if (d < now) return days < 0 ? { text: `${plural(-days, 'day')} late`, cls: 'late' } : { text: `Late, ${fmtTime(d)}`, cls: 'late' };
+  if (days === 0) return { text: `Today ${fmtTime(d)}`, cls: 'today' };
+  if (days === 1) return { text: 'Tomorrow', cls: 'soon' };
+  return { text: d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }), cls: '' };
+}
+function ovRow(t, i) {
+  const done = t.status === 'done';
+  const late = !done && t.deadline && new Date(t.deadline) < new Date();
+  const alert = !done && (t.priority === 'urgent' || late);
+  const mine = isAdmin() || t.assignees.some((a) => a.id === S.user.id);
+  const due = ovDue(done ? t.completed_at : t.deadline, done);
+  const cls = done ? 'on' : late ? 'late' : t.status === 'in_progress' ? 'prog' : '';
+  return `<div class="ov-row ${alert ? 'alert' : ''} ${done ? 'done' : ''}" data-act="openTask" data-id="${t.id}" role="button" tabindex="0" style="animation-delay:${Math.min(i, 8) * 35}ms">
+    ${mine && !done ? `<button type="button" class="ov-check ${cls}" data-act="quickDone" data-id="${t.id}" aria-label="Mark as done">${ic('check')}</button>` : `<span class="ov-check ${cls}">${ic('check')}</span>`}
+    <div class="t"><div class="tt"><b>${esc(t.title)}</b>${t.priority === 'urgent' && !done ? '<span class="tag red">Urgent</span>' : ''}</div>
+      <div class="sub">${t.client_name ? `${logo(taskClient(t), 'xs')}<span class="ellipsis">${esc(t.client_name)}</span>` : `<span class="faint">${t.team_name ? esc(t.team_name) : 'No client'}</span>`}</div></div>
+    <div class="avatars">${t.assignees.slice(0, 3).map((a) => avatar(a, 'xs')).join('')}</div>
+    <span class="due-at ${due.cls}">${due.text}</span></div>`;
+}
+const ovDeadlineRow = (d, i) => {
+  const due = ovDue(d.due_at, false);
+  return `<div class="ov-row" data-act="nav" data-to="clients/${d.client_id}" role="button" tabindex="0" style="animation-delay:${Math.min(i, 8) * 35}ms">
+    <span class="ov-check"></span>
+    <div class="t"><div class="tt"><b>${esc(d.title)}</b><span class="tag brand">Client deadline</span></div>
+      <div class="sub">${logo({ name: d.client_name, color: d.client_color, logo_key: d.client_logo }, 'xs')}<span class="ellipsis">${esc(d.client_name)}</span></div></div>
+    <span class="due-at ${due.cls}">${due.text}</span></div>`;
+};
+
 VIEWS.home = {
   admin: true, title: () => 'Overview',
   sub: () => new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }),
@@ -446,45 +528,41 @@ VIEWS.home = {
     const c = o.counts;
     const hour = new Date().getHours();
     const greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-    const stat = (label, n, tone, icon, status) => `<button class="stat ${tone}" data-act="statGo" data-status="${status}">
-      <div class="ico">${ic(icon)}</div><div><b>${n || 0}</b><span>${label}</span></div></button>`;
+    const pick = OV_LISTS[S.ui.ovList] ? S.ui.ovList : 'due';
+    const n = { due: (c.due_soon || 0) + o.client_deadlines.length, in_progress: c.in_progress || 0, overdue: c.overdue || 0, done: c.done_today || 0 };
+    const list = { due: o.due_soon, in_progress: o.in_progress, overdue: o.overdue, done: o.done_today }[pick];
+    const rows = pick === 'due'
+      ? [...list.map((t) => [t.deadline, (i) => ovRow(t, i)]), ...o.client_deadlines.map((d) => [d.due_at, (i) => ovDeadlineRow(d, i)])]
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0]))).map(([, r], i) => r(i))
+      : list.map(ovRow);
+    const [, , listTitle, emptyT, emptyX] = OV_LISTS[pick];
+    const open = (c.todo || 0) + (c.in_progress || 0);
     const maxOpen = Math.max(1, ...o.team.map((u) => u.open));
-    const soon = o.due_soon.length + o.client_deadlines.length;
-    return `${notifBanner()}${o.finance ? financeBanner(o.finance) : ''}
-      <div class="hero"><div><h2>${greet}, ${esc(S.user.name.split(' ')[0])} 👋</h2>
-        <div class="muted" style="margin-top:4px">${c.overdue ? `<b style="color:var(--red)">${plural(c.overdue, 'task')} overdue</b> · ` : ''}${plural((c.todo || 0) + (c.in_progress || 0), 'open task')} across ${plural(c.clients || 0, 'client')}</div></div>
+    return `${notifBanner()}<div class="ov">
+      <div class="ov-head"><div><h1>${greet}, ${esc(S.user.name.split(' ')[0])}</h1>
+        <p>${c.overdue ? `<b>${plural(c.overdue, 'task')} overdue.</b> ` : ''}${plural(open, 'open task')} across ${plural(c.clients || 0, 'client')}.</p></div>
         <button class="btn hide-mobile" data-act="newClient">${ic('plus')} New client</button></div>
-      <div class="stats">
-        ${stat('To do', c.todo, '', 'inbox', 'open')}${stat('In progress', c.in_progress, 'tone-blue', 'play', 'in_progress')}
-        ${stat('Overdue', c.overdue, 'tone-red', 'alert', 'overdue')}${stat('Done today', c.done_today, 'tone-green', 'check', 'done')}
-        <button class="stat tone-amber" data-act="nav" data-to="clients"><div class="ico">${ic('briefcase')}</div><div><b>${c.clients || 0}</b><span>Clients</span></div></button>
-      </div>
-      <div class="cols">
-        <div>
-          <div class="section"><div class="section-head"><h2 class="grow">Due soon</h2><span class="small muted">next 3 days</span></div>
-            ${soon ? `${taskList(o.due_soon)}
-              ${o.client_deadlines.length ? `<div class="card list" style="margin-top:8px">${o.client_deadlines.map((d) => `
-                <div class="list-item click" data-act="nav" data-to="clients/${d.client_id}">
-                  ${logo({ name: d.client_name, color: d.client_color, logo_key: d.client_logo }, 'sm')}
-                  <div class="grow"><div class="strong ellipsis">${esc(d.title)}</div><div class="small muted">${esc(d.client_name)} · client deadline</div></div>
-                  <span class="chip ${dueInfo(d.due_at).cls}">${dueInfo(d.due_at).text}</span></div>`).join('')}</div>` : ''}`
-    : `<div class="card">${empty('calendar', 'Nothing due soon', 'Upcoming deadlines will show here.')}</div>`}</div>
-          <div class="section"><div class="section-head"><h2 class="grow">Recently completed</h2><button class="btn ghost sm" data-act="statGo" data-status="done">View all ${ic('arrow')}</button></div>
-            ${o.recent_done.length ? taskList(o.recent_done) : `<div class="card">${empty('tasks', 'No finished tasks yet', 'When your team marks tasks as done, they appear here.')}</div>`}</div>
+      ${o.finance ? financeBanner(o.finance) : ''}
+      <div class="ov-stats">${Object.entries(OV_LISTS).map(([k, [label, hint]]) => `<button class="ov-stat ${k === pick ? 'on' : ''}" data-act="ovList" data-v="${k}">
+        <span>${label}</span><b class="${k === 'overdue' && n[k] ? 'red' : ''}">${n[k]}</b><small>${hint}</small></button>`).join('')}</div>
+      <div class="ov-cols">
+        <section class="panel ov-main"><div class="panel-head line"><h2>${listTitle}</h2>
+          <button class="panel-link" data-act="statGo" data-status="${pick === 'due' ? 'open' : pick}">All tasks${ic('arrow')}</button></div>
+          ${rows.length ? rows.join('') : empty(pick === 'overdue' ? 'check' : 'calendar', emptyT, emptyX)}</section>
+        <div class="ov-side">
+          <section class="panel"><div class="panel-head"><h2>Team workload</h2><button class="panel-link" data-act="nav" data-to="team">Manage</button></div>
+            ${o.team.length ? `<div class="wl">${o.team.map((u) => `<div class="wl-row" data-act="viewUserTasks" data-id="${u.id}" role="button" tabindex="0">${avatar(u)}
+              <div class="grow"><div class="top"><b>${esc(u.name)}</b><span>${u.open} open${u.overdue ? `<em>, ${u.overdue} late</em>` : ''}</span></div>
+                <div class="wl-bar"><i style="width:${Math.round((u.open / maxOpen) * 100)}%"></i></div></div></div>`).join('')}</div>`
+    : empty('users', 'No employees yet', 'Add your team to start assigning work.', `<button class="btn primary" data-act="newUser">${ic('plus')} Add employee</button>`)}</section>
+          <section class="panel"><div class="panel-head"><h2>Latest updates</h2><button class="panel-link" data-act="nav" data-to="updates">All updates</button></div>
+            ${o.latest_updates.length ? `<div class="up-list">${o.latest_updates.map((u) => `<div class="up" data-act="openTask" data-id="${u.task_id}" role="button" tabindex="0">
+              ${avatar({ id: u.user_id, name: u.user_name || '?' })}<div class="grow">
+              <div class="who"><b>${esc((u.user_name || 'Someone').split(' ')[0])}</b><span>${timeAgo(u.created_at)}</span>${u.progress !== null && u.progress !== undefined ? `<em>${u.progress}%</em>` : ''}</div>
+              <span class="txt">${esc(u.text)}</span><span class="task-of">${esc(u.task_title)}</span></div></div>`).join('')}</div>`
+    : empty('pulse', 'No updates yet', 'Employees post progress like “Figma file done”. You get them together every hour.')}</section>
         </div>
-        <div>
-        <div class="section"><div class="section-head"><h2 class="grow">Latest updates</h2><button class="btn ghost sm" data-act="nav" data-to="updates">All updates ${ic('arrow')}</button></div>
-          <div class="card">${o.latest_updates.length ? `<div class="feed">${o.latest_updates.map(updateItem).join('')}</div>`
-    : empty('pulse', 'No updates yet', 'Employees post progress like “Figma file done”. You get them together every hour.')}</div></div>
-        <div class="section"><div class="section-head"><h2 class="grow">Team workload</h2><button class="btn ghost sm" data-act="nav" data-to="team">Manage</button></div>
-          <div class="card">${o.team.length ? `<div class="workload" style="padding-top:18px">${o.team.map((u) => `
-            <div class="row click" data-act="viewUserTasks" data-id="${u.id}" style="cursor:pointer">${avatar(u)}
-              <div class="grow"><div class="row between"><b class="ellipsis">${esc(u.name)}</b><span class="small muted nowrap">${u.open} open${u.overdue ? ` · <span style="color:var(--red)">${u.overdue} late</span>` : ''}</span></div>
-                <div class="bar"><i style="width:${Math.round((u.open / maxOpen) * 100)}%"></i></div>
-                <div class="tiny faint" style="margin-top:4px">${u.done_week} done this week</div></div></div>`).join('')}</div>`
-    : empty('users', 'No employees yet', 'Add your team to start assigning work.', `<button class="btn primary" data-act="newUser">${ic('plus')} Add employee</button>`)}</div></div>
-        </div>
-      </div>`;
+      </div></div>`;
   },
 };
 
@@ -544,7 +622,7 @@ VIEWS.client = {
     } else if (tab === 'deadlines') {
       body = `${admin ? `<form class="card pad" data-submit="addDeadline" data-id="${c.id}" style="margin-bottom:14px;padding:14px">
           <div class="row wrap"><input class="input grow" name="title" data-keep="dl-title" placeholder="Deadline, e.g. Website launch" required style="min-width:180px">
-            <input class="input" type="datetime-local" name="due_at" data-keep="dl-date" required style="width:auto">
+            ${dueField('due_at', null, 'data-keep', 'required')}
             <button class="btn primary">${ic('plus')} Add</button></div></form>` : ''}
         ${c.deadlines.length ? `<div class="card list">${c.deadlines.map((d) => `
           <div class="list-item deadline-item ${d.done ? 'done' : ''}">
@@ -795,8 +873,11 @@ VIEWS.settings = {
     else install = '<div class="small muted">Browser menu <b>⋮</b> → <b>Install app</b> (PC) or <b>Add to Home screen</b> (phone).</div>';
     const card = (icon, title, text, right) => `<div class="card pad setting"><div class="mat-icon">${ic(icon)}</div>
       <div class="grow"><b>${title}</b><div class="small muted" style="margin:2px 0 10px">${text}</div>${right}</div></div>`;
-    return `<div class="card pad row" style="gap:16px">${avatar(S.user, 'lg')}<div class="grow"><h2 style="font-size:20px">${esc(S.user.name)}</h2>
-        <div class="muted">@${esc(S.user.username)} · ${roleLabel(S.user)}</div></div>
+    return `<div class="card pad row" style="gap:16px"><label class="photo-edit" title="Change profile photo">${avatar(S.user, 'lg')}<span class="badge-cam">${ic('image')}</span>
+        <input type="file" accept="image/*" hidden data-photo-file></label><div class="grow"><h2 style="font-size:20px">${esc(S.user.name)}</h2>
+        <div class="muted">@${esc(S.user.username)} · ${roleLabel(S.user)}</div>
+        <div class="row" style="gap:12px;margin-top:6px"><label class="link-btn" style="cursor:pointer">${S.user.photo_key ? 'Change photo' : 'Add profile photo'}<input type="file" accept="image/*" hidden data-photo-file></label>
+          ${S.user.photo_key ? '<button class="link-btn" data-act="removePhoto">Remove</button>' : ''}</div></div>
         <button class="btn danger hide-mobile" data-act="logout">${ic('logout')} Log out</button></div>
       <div class="settings-grid section">
         ${card('sun', 'Appearance', 'Choose how the app looks on this device.', `<div class="seg">
@@ -870,6 +951,7 @@ function paint(keep = true) {
   const active = document.activeElement?.dataset?.keep;
   const selStart = document.activeElement?.selectionStart, selEnd = document.activeElement?.selectionEnd;
   el.innerHTML = current.v.html(current.data, current.r);
+  el.classList.toggle('still', keep); // entrance animations only on a fresh page, not on live refreshes
   updateChrome(current.r, current.v, current.data);
   if (keep) {
     $$('[data-keep]', el).forEach((i) => { if (i.dataset.keep in kept) i.value = kept[i.dataset.keep]; });
@@ -904,6 +986,7 @@ function updateChrome(r, v, data) {
 }
 function updateBadges() {
   $$('[data-badge]').forEach((b) => { b.textContent = S.unread > 99 ? '99+' : S.unread; b.classList.toggle('hidden', !S.unread); });
+  $$('[data-navcount]').forEach((n) => { const v = S.counts?.[n.dataset.navcount === 'tasks' ? 'open_tasks' : 'clients']; n.textContent = v || ''; });
   document.title = document.title.replace(/^\(\d+\+?\) /, '');
   if (S.unread) document.title = `(${S.unread}) ${document.title}`;
   navigator.setAppBadge?.(S.unread || undefined)?.catch?.(() => {});
@@ -916,22 +999,20 @@ function mountShell() {
     ? [['home', 'Overview', 'home'], ['clients', 'Clients', 'briefcase'], ['tasks', 'Tasks', 'tasks'], ['boards', 'Team boards', 'board'], ['updates', 'Updates', 'pulse'], ['team', 'Team', 'users']]
     : [['tasks', 'My tasks', 'tasks'], ['boards', 'Team boards', 'board'], ['updates', 'Updates', 'pulse'], ['clients', 'Clients', 'briefcase']];
   const owner = isOwner();
-  const money = [['finance', 'Overview', 'spark'], ['receivables', 'Receivables', 'inbox'], ['commercials', 'Commercials', 'file'], ['pipeline', 'Opportunities', 'arrow'], ['bot', 'WhatsApp bot', 'msg']];
+  const money = [['finance', 'Money overview', 'spark'], ['receivables', 'Receivables', 'inbox'], ['commercials', 'Commercials', 'file'], ['pipeline', 'Opportunities', 'arrow'], ['bot', 'WhatsApp bot', 'msg']];
   const tabs = owner
     ? [['home', 'Home', 'home'], ['clients', 'Clients', 'briefcase'], ['notes', 'Notes', 'note'], ['tasks', 'Tasks', 'tasks'], ['finance', 'Money', 'inbox']]
     : admin
     ? [['home', 'Home', 'home'], ['clients', 'Clients', 'briefcase'], ['notes', 'Notes', 'note'], ['tasks', 'Tasks', 'tasks'], ['team', 'Team', 'users']]
     : [['tasks', 'Tasks', 'tasks'], ['clients', 'Clients', 'briefcase'], ['notes', 'Notes', 'note'], ['notifications', 'Alerts', 'bell'], ['settings', 'Me', 'user']];
-  const navBtn = ([k, label, icon]) => `<button class="nav-item" data-act="nav" data-to="${k}" data-nav="${k}">${ic(icon)}<span>${label}</span></button>`;
+  const navBtn = ([k, label, icon]) => `<button class="nav-item" data-act="nav" data-to="${k}" data-nav="${k}">${ic(icon)}<span>${label}</span>${k === 'clients' || k === 'tasks' ? `<span class="n" data-navcount="${k}"></span>` : ''}</button>`;
   $('#app').innerHTML = `<div class="shell">
     <aside class="sidebar">
-      <div class="brand"><img src="/icons/icon-192.png" alt=""><div><b>Digiteq</b><span>Company dashboard</span></div></div>
+      <div class="brand"><img src="/brand/mark.svg" alt="" width="32" height="26"><div><b>Digiteq</b><span>Solution</span></div></div>
+      <button class="jump" data-act="jumpTo">${ic('search')}<span>Search or jump to…</span><kbd>${/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'}</kbd></button>
       <div class="nav-label">Workspace</div>
       ${main.map(navBtn).join('')}
-      ${owner ? `<div class="nav-label">Owner</div>${money.map(navBtn).join('')}` : ''}
-      <div class="nav-label">Personal</div>
-      <button class="nav-item" data-act="toggleNotes" data-notes-nav>${ic('note')}<span>My notes</span><span class="pill">Pop-up</span></button>
-      <button class="nav-item" data-act="nav" data-to="notifications" data-nav="notifications">${ic('bell')}<span>Notifications</span><span class="count hidden" data-badge></span></button>
+      ${owner ? `<div class="nav-label">Finance</div>${money.map(navBtn).join('')}` : ''}
       <div class="spacer"></div>
       <div class="install-card ${S.installEvt && !standalone() ? '' : 'hidden'}" data-install><b>Get the desktop app</b>Open Digiteq in its own window.
         <button class="btn sm" data-act="install">${ic('download')} Install</button></div>
@@ -944,8 +1025,8 @@ function mountShell() {
         <div class="titles"><h1 id="title"></h1><div class="sub" id="subtitle"></div></div>
         <span class="clock" data-clock></span>
         <span class="live" title="Live updates">Live</span>
+        <button class="icon-btn ${admin ? '' : 'hide-mobile'}" data-act="nav" data-to="notifications" data-nav="notifications" aria-label="Notifications">${ic('bell')}<span class="count hidden" data-badge></span></button>
         <button class="btn primary hide-mobile hidden" data-top-action></button>
-        <button class="icon-btn ${admin ? '' : 'hide-mobile'}" data-act="nav" data-to="notifications" aria-label="Notifications">${ic('bell')}<span class="count hidden" data-badge></span></button>
         <button class="icon-btn hide-desktop ${admin ? '' : 'hidden'}" data-act="nav" data-to="settings" aria-label="Settings">${avatar(S.user, 'xs')}</button>
       </header>
       <div class="scroll"><div class="view" id="view"></div></div>
@@ -957,6 +1038,7 @@ function mountShell() {
     <button class="notes-fab" data-act="toggleNotes" aria-label="My notes">${ic('note')}<span class="tip">My notes</span></button>
   </div>`;
   setLive(S.live);
+  tickClock();
   updateBadges();
 }
 function setLive(on) {
@@ -1024,7 +1106,7 @@ function renderNotes() {
           <div class="label" style="margin-bottom:6px">${ic('tasks')} Add to my tasks</div>
           <input class="input" name="title" data-nkeep="ct-${n.id}" value="${esc(first.slice(0, 120))}" placeholder="Task title" required>
           <div class="date-quick">${QUICK_DATES.map(([k, l]) => `<button type="button" class="btn sm ${k === 'clear' ? 'ghost' : ''}" data-act="noteDate" data-v="${k}">${l}</button>`).join('')}</div>
-          <input class="input" type="datetime-local" name="deadline" data-nkeep="cd-${n.id}" aria-label="Deadline">
+          ${dueField('deadline', null, 'data-nkeep').replaceAll('="deadline-', `="cd-${n.id}-`)}
           <div class="row" style="justify-content:flex-end;margin-top:12px"><button type="button" class="btn sm ghost" data-act="cancelConvert">Cancel</button>
             <button class="btn sm primary">${ic('check')} Confirm</button></div>
         </form>` : ''}
@@ -1175,7 +1257,7 @@ async function openTaskForm({ task = null, prefill = {} } = {}) {
         <label class="field"><span>Priority</span><select class="input" name="priority">
           ${Object.entries(PRIO).map(([k, l]) => `<option value="${k}" ${(t.priority || 'normal') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       </div>
-      <div class="field"><span>Deadline</span><input class="input" type="datetime-local" name="deadline" value="${toLocalInput(t.deadline)}">
+      <div class="field"><span>Deadline</span>${dueField('deadline', t.deadline)}
         <div class="date-quick">${QUICK_DATES.map(([k, l]) => `<button type="button" class="btn sm ${k === 'clear' ? 'ghost' : ''}" data-act="quickDate" data-v="${k}">${l}</button>`).join('')}</div></div>
       ${admin ? `<label class="field"><span>Team <span class="faint" style="font-weight:500">— everyone in it shares the task</span></span><select class="input" name="team_id" data-on-change="taskTeam">
         <option value="">No team</option>${teams.map((x) => `<option value="${x.id}" ${String(t.team_id || '') === String(x.id) ? 'selected' : ''} ${x.members.length ? '' : 'disabled'}>${esc(x.name)} (${x.members.length ? plural(x.members.length, 'person') : 'no members yet'})</option>`).join('')}</select></label>
@@ -1319,7 +1401,12 @@ const ACT = {
     const { sent } = await api('POST', '/api/updates/digest');
     toast(sent ? `Sent ${plural(sent, 'update')} in one notification` : 'No new updates since the last digest', sent ? 'ok' : '');
   },
-  quickDate(el) { $('[name="deadline"]', modalOf(el).el).value = quickDateValue(el.dataset.v); },
+  async removePhoto() {
+    S.user = (await api('POST', '/api/me/photo', { photo: null })).user;
+    await loadPhotos(); mountShell(); renderView();
+    toast('Profile photo removed', 'ok');
+  },
+  quickDate(el) { setDue($('[name="deadline"]', modalOf(el).el).form, 'deadline', fromLocalInput(quickDateValue(el.dataset.v))); },
   attShowLink(el) { const f = $('.link-form', el.closest('[data-attach]')); f.classList.remove('hidden'); $('[data-link-url]', f).focus(); },
   attAddLink(el) {
     const box = el.closest('[data-attach]');
@@ -1342,6 +1429,41 @@ const ACT = {
     if (!(await ask('Remove this file or link?', { ok: 'Remove', danger: true }))) return;
     await api('DELETE', `/api/materials/${el.dataset.id}`);
     toast('Removed', 'ok'); scheduleRefresh();
+  },
+  ovList(el) { S.ui.ovList = el.dataset.v; paint(); $('#view').classList.remove('still'); $('.ov').style.animation = 'none'; },
+  // Search or jump to: pages from the sidebar, then clients and tasks loaded on open.
+  async jumpTo() {
+    if (stack.some((x) => x.data.jump)) return;
+    const pages = $$('.sidebar [data-nav]').map((n) => ({ label: n.classList.contains('me-card') ? 'Settings' : n.querySelector('span')?.textContent || '', kind: 'Page', icon: 'arrow', to: n.dataset.to }));
+    const m = openModal({ title: 'Search or jump to', data: { jump: true, items: pages, on: 0 },
+      body: `<input class="input" data-jump placeholder="Type a page, client or task" autocomplete="off"><div class="jump-list" data-jump-list></div>` });
+    const draw = () => {
+      const q = $('[data-jump]', m.el).value.trim().toLowerCase();
+      m.data.hits = m.data.items.filter((x) => !q || x.label.toLowerCase().includes(q)).slice(0, 30);
+      m.data.on = Math.min(m.data.on, Math.max(0, m.data.hits.length - 1));
+      $('[data-jump-list]', m.el).innerHTML = m.data.hits.map((x, i) => `<button type="button" class="jump-item ${i === m.data.on ? 'on' : ''}" data-act="jumpGo" data-i="${i}">
+        ${x.logo || ic(x.icon)}<span class="ellipsis">${esc(x.label)}</span><span class="kind">${x.kind}</span></button>`).join('') || '<div class="muted small" style="padding:10px 12px">Nothing found</div>';
+    };
+    m.data.draw = draw;
+    const input = $('[data-jump]', m.el);
+    input.addEventListener('input', () => { m.data.on = 0; draw(); });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); m.data.on = Math.max(0, Math.min(m.data.hits.length - 1, m.data.on + (e.key === 'ArrowDown' ? 1 : -1))); draw(); }
+      if (e.key === 'Enter') { e.preventDefault(); if (m.data.hits[m.data.on]) ACT.jumpGo({ dataset: { i: m.data.on } }); }
+    });
+    draw();
+    setTimeout(() => input.focus(), 30);
+    const [clients, tasks] = await Promise.all([api('GET', '/api/clients'), api('GET', '/api/tasks?limit=300')]);
+    m.data.items = [...pages,
+      ...clients.map((c) => ({ label: c.name, kind: 'Client', logo: logo(c, 'sm'), to: `clients/${c.id}` })),
+      ...tasks.map((t) => ({ label: t.title, kind: t.status === 'done' ? 'Done task' : 'Task', icon: 'tasks', task: t.id }))];
+    draw();
+  },
+  jumpGo(el) {
+    const m = stack.find((x) => x.data.jump); const x = m?.data.hits[Number(el.dataset.i)];
+    if (!x) return;
+    closeTop();
+    if (x.task) openTask(x.task); else go(x.to);
   },
   statGo(el) { S.ui.adminStatus = el.dataset.status; S.ui.layout = 'list'; go('tasks'); },
   myStatus(el) { S.ui.myStatus = el.dataset.status; S.ui.myStatusPicked = true; paint(); },
@@ -1378,7 +1500,7 @@ const ACT = {
   },
   startConvert(el) { S.notes.converting = Number(el.dataset.id); S.notes.editing = null; renderNotes(); $('#notes .convert input')?.focus(); },
   cancelConvert() { S.notes.converting = null; renderNotes(); },
-  noteDate(el) { el.closest('form').deadline.value = quickDateValue(el.dataset.v); },
+  noteDate(el) { setDue(el.closest('form'), 'deadline', fromLocalInput(quickDateValue(el.dataset.v))); },
   editNote(el) { S.notes.editing = Number(el.dataset.id); S.notes.converting = null; renderNotes(); $('#notes .note textarea')?.focus(); },
   cancelNoteEdit() { S.notes.editing = null; renderNotes(); },
   async delNote(el) {
@@ -1534,7 +1656,7 @@ const SUBMIT = {
     const admin = isAdmin();
     const body = {
       title: f.title.value.trim(), client_id: f.client_id.value || null, priority: f.priority.value,
-      deadline: fromLocalInput(f.deadline.value), description: f.description.value,
+      deadline: readDue(f, 'deadline'), description: f.description.value,
     };
     if (!body.title) { f.title.focus(); throw new Error('Please enter a task title'); }
     if (admin) {
@@ -1586,7 +1708,7 @@ const SUBMIT = {
     closeModalObj(m); toast('Saved', 'ok'); S.ui.clientTab = 'materials'; scheduleRefresh();
   },
   async addDeadline(f) {
-    await api('POST', `/api/clients/${f.dataset.id}/deadlines`, { title: f.title.value, due_at: fromLocalInput(f.due_at.value) });
+    await api('POST', `/api/clients/${f.dataset.id}/deadlines`, { title: f.title.value, due_at: readDue(f, 'due_at') });
     f.reset(); $$('[data-keep]', f).forEach((i) => { i.value = ''; });
     toast('Deadline added', 'ok'); scheduleRefresh();
   },
@@ -1614,7 +1736,7 @@ const SUBMIT = {
     if (!title) { f.title.focus(); throw new Error('Give the task a title'); }
     const note = S.notes.list.find((n) => String(n.id) === f.dataset.id);
     const description = note.content.startsWith(title) ? note.content.slice(title.length).trim() : note.content;
-    const body = { title, description, deadline: fromLocalInput(f.deadline.value), note_id: note.id };
+    const body = { title, description, deadline: readDue(f, 'deadline'), note_id: note.id };
     if (isAdmin()) body.assignees = [S.user.id];
     await api('POST', '/api/tasks', body);
     S.notes.converting = null;
@@ -1708,6 +1830,7 @@ document.addEventListener('click', async (e) => {
   try { await fn(el, e); } catch (err) { toast(err.message, 'bad'); }
 });
 document.addEventListener('keydown', (e) => {
+  if (e.key.toLowerCase() === 'k' && (e.ctrlKey || e.metaKey) && S.user && $('.shell')) { e.preventDefault(); ACT.jumpTo(); return; }
   if (e.key === 'Escape') {
     if (stack.length) { e.preventDefault(); closeTop(); return; }
     if (S.notes.open) { e.preventDefault(); closeNotes(); return; }
@@ -1746,12 +1869,13 @@ function scheduleRefresh() {
 }
 async function refreshAll() {
   if (!S.user) return;
+  loadPhotos().catch(() => {});
   api('GET', '/api/me').then((d) => {
     if (!S.user) return;
     const roleChanged = d.user.role !== S.user.role || d.user.is_owner !== S.user.is_owner;
     if (d.currency) S.currency = d.currency;
     S.emailReset = !!d.email_reset;
-    S.user = d.user; S.unread = d.unread;
+    S.user = d.user; S.unread = d.unread; S.counts = d.counts;
     if (roleChanged) { mountShell(); renderView(); } else updateBadges();
   }).catch(() => {});
   if (current) renderView(true);
@@ -1861,7 +1985,7 @@ function authShell(inner) {
   const perks = [['briefcase', 'Every client on one card — tasks, deadlines, files'], ['users', 'Assign work to one or many teammates'], ['bell', 'Instant alerts when work is finished'], ['note', 'Private notes that turn into tasks in one click']];
   $('#app').innerHTML = `<div class="auth">
     <div class="auth-side">
-      <div class="brand" style="padding:0"><img src="/icons/icon-192.png" alt=""><div><b>Digiteq</b><span>Company dashboard</span></div></div>
+      <div class="brand" style="padding:0"><img class="wordmark" src="/brand/logo-dark-bg.webp" alt="Digiteq Solution" width="220" height="46" style="width:220px"></div>
       <div><h2>Your team’s work, clear and on time.</h2><div style="max-width:420px">Clients, tasks and deadlines in one place — updated live on every phone and PC.</div>
         <ul>${perks.map(([i, t]) => `<li><span class="ico">${ic(i)}</span>${t}</li>`).join('')}</ul></div>
       <div class="small" style="opacity:.6">© ${new Date().getFullYear()} Digiteq</div>
@@ -1869,7 +1993,7 @@ function authShell(inner) {
     <div class="auth-main">${inner}</div></div>`;
   setTimeout(() => $('.auth-main input:not([type=hidden])')?.focus(), 50);
 }
-const authHead = (title, text) => `<img class="logo-sm" src="/icons/icon-192.png" alt=""><h1>${title}</h1><p class="muted" style="margin-bottom:24px">${text}</p>`;
+const authHead = (title, text) => `<img class="logo-sm" src="/brand/mark.svg" alt="Digiteq"><h1>${title}</h1><p class="muted" style="margin-bottom:24px">${text}</p>`;
 const formErr = '<div class="err" data-form-err style="min-height:20px;margin-bottom:8px"></div>';
 function showAuth(needsSetup) {
   authShell(`<form class="auth-form" data-submit="${needsSetup ? 'setup' : 'login'}">
@@ -1957,6 +2081,7 @@ function startApp() {
   if (!location.hash || location.hash === '#/') history.replaceState(null, '', `#/${defaultRoute()}`);
   renderView();
   startPolling();
+  loadPhotos().then(() => { if (Object.keys(S.photos).length) { mountShell(); renderView(); } }).catch(() => {});
   if ('Notification' in window && Notification.permission === 'granted') subscribePush().catch(() => {});
 }
 async function boot() {
@@ -1965,7 +2090,7 @@ async function boot() {
   if (S.token) {
     try {
       const d = await api('GET', '/api/me');
-      S.user = d.user; S.unread = d.unread; S.currency = d.currency || 'INR'; S.emailReset = !!d.email_reset;
+      S.user = d.user; S.unread = d.unread; S.counts = d.counts; S.currency = d.currency || 'INR'; S.emailReset = !!d.email_reset;
       return startApp();
     } catch (err) {
       if (err.status === 0) {

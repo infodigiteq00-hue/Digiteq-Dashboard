@@ -377,7 +377,8 @@ export function registerFinance(h) {
     const open = await invoices("WHERE i.status = 'open'");
     const outstanding = round2(open.reduce((n, i) => n + i.balance, 0));
     const overdue = round2(open.filter((i) => i.state === 'overdue').reduce((n, i) => n + i.balance, 0));
-    return { outstanding, overdue, overdue_count: open.filter((i) => i.state === 'overdue').length, today: t };
+    const collected = await get('SELECT COALESCE(SUM(amount), 0) AS n FROM payments WHERE paid_on >= ?', `${t.slice(0, 7)}-01`);
+    return { outstanding, overdue, overdue_count: open.filter((i) => i.state === 'overdue').length, collected_month: round2(collected.n), today: t };
   }
   async function clientFinance(clientId) {
     const inv = await invoices('WHERE i.client_id = ?', clientId);

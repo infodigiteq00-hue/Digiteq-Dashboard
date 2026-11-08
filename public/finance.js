@@ -188,11 +188,13 @@ export function clientFinanceTab(c) {
     <div class="section-head" style="margin-top:24px"><h2 class="grow">Invoices</h2><button class="btn primary sm" data-act="newInvoice" data-client="${c.id}">${A.ic('plus')} New invoice</button></div>
     ${f.invoices.length ? `<div class="fin-list">${f.invoices.map((i) => invoiceRow(i, { showClient: false })).join('')}</div>` : '<div class="muted small">No invoices yet.</div>'}`;
 }
-// Money banner on the Overview page (owners only).
+// Money strip on the Overview page (owners only).
 export function financeBanner(s) {
-  if (!s.outstanding) return '';
-  return `<div class="banner ${s.overdue ? 'red' : ''}" data-act="nav" data-to="finance" style="cursor:pointer"><div class="ico">${A.ic('inbox')}</div>
-    <div class="grow"><b>${money(s.outstanding)} due from clients</b><div class="small muted">${s.overdue ? `${money(s.overdue)} is overdue (${A.plural(s.overdue_count, 'invoice')})` : 'Nothing overdue'} · tap for finance</div></div>${A.ic('arrow')}</div>`;
+  return `<div class="ov-money" data-act="nav" data-to="finance" role="button" tabindex="0">
+    <div><span>Outstanding</span><b>${money(s.outstanding)}</b></div>
+    <div><span>Overdue invoices</span><b class="${s.overdue ? 'red' : ''}">${money(s.overdue)}</b></div>
+    <div><span>Collected this month</span><b class="green">${money(s.collected_month || 0)}</b></div>
+    <span class="go">Open finance${A.ic('arrow')}</span></div>`;
 }
 
 // ------------------------------------------------------------------ sheets & forms
